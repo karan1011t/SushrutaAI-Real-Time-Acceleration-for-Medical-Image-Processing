@@ -1,0 +1,42 @@
+{
+    "experiment_name": "Baseline-01: FLAIR-only 2D U-Net",
+    "model_name": "UNet2D",
+    "best_epoch": 2,
+    "data_summary": {
+        "available_patients": 360,
+        "train_patients": 245,
+        "val_patients": 58,
+        "test_patients": 57,
+        "train_slices": 13150,
+        "val_slices": 3118,
+        "test_slices": 3076
+    },
+    "global_pixel_metrics": {
+        "dice": 0.7105531658211027,
+        "iou": 0.5510527049171232,
+        "precision": 0.5519609993416466,
+        "recall": 0.9970226482811232,
+        "f1": 0.7105527070989083
+    },
+    "macro_per_image_all_slices": {
+        "dice": 0.7990068183466947,
+        "iou": 0.74737100154163,
+        "precision": 0.7487858882174404,
+        "recall": 0.9010378178776517,
+        "f1": 0.8789656749740243
+    },
+    "tumor_only_slice_metrics": {
+        "dice": 0.8069781440117707,
+        "iou": 0.7350118488130742,
+        "precision": 0.7369838163054929,
+        "recall": 0.9491816277040442,
+        "f1": 0.8313364634218947
+    },
+    "performance": {
+        "total_parameters": 4317825,
+        "avg_latency_ms": 87.34672486782074,
+        "fps": 11.448626167876025,
+        "device": "cpu",
+        "gpu_name": "CPU Mode"
+    }
+}

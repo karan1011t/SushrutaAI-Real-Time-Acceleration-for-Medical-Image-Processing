@@ -1,0 +1,16 @@
+Metric_Type,Metric_Name,Value
+Global_Pixel_Level,Dice,0.710553
+Global_Pixel_Level,Iou,0.551053
+Global_Pixel_Level,Precision,0.551961
+Global_Pixel_Level,Recall,0.997023
+Global_Pixel_Level,F1,0.710553
+Macro_Per_Image_All_Slices,Dice,0.799007
+Macro_Per_Image_All_Slices,Iou,0.747371
+Macro_Per_Image_All_Slices,Precision,0.748786
+Macro_Per_Image_All_Slices,Recall,0.901038
+Macro_Per_Image_All_Slices,F1,0.878966
+Tumor_Only_Slices,Dice,0.806978
+Tumor_Only_Slices,Iou,0.735012
+Tumor_Only_Slices,Precision,0.736984
+Tumor_Only_Slices,Recall,0.949182
+Tumor_Only_Slices,F1,0.831336

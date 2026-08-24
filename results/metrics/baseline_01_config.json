@@ -1,0 +1,24 @@
+{
+    "experiment_name": "Baseline-01: FLAIR-only 2D U-Net",
+    "random_seed": 42,
+    "batch_size": 16,
+    "learning_rate": 0.001,
+    "epochs": 12,
+    "smoke_test_epochs": 3,
+    "base_channels": 32,
+    "image_size": [
+        256,
+        256
+    ],
+    "loss_weights": {
+        "weight_dice": 0.5,
+        "weight_bce": 0.5
+    },
+    "threshold": 0.5,
+    "num_workers": 0,
+    "data_dir": "data/processed/brats",
+    "checkpoint_dir": "results/models",
+    "best_ckpt_name": "baseline_01_flair_unet_best.pt",
+    "metrics_dir": "results/metrics",
+    "figures_dir": "results/figures"
+}

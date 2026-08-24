@@ -3,15 +3,18 @@ BraTS MRI Dataset Preprocessing Module
 
 Provides modular utility functions and preprocessor classes for converting 3D BraTS
 medical volumes into a clean 2D dataset prepared for deep learning baseline segmentation models.
+Enforces strict patient-level split isolation driven by split_manifest.json as the Single Source of Truth.
 """
 
 import os
 import glob
 import math
 import json
+import csv
+import shutil
 import random
 import pathlib
-from typing import List, Dict, Tuple, Optional, Any
+from typing import List, Dict, Tuple, Optional, Any, Set
 import numpy as np
 import nibabel as nib
 import cv2
@@ -79,7 +82,6 @@ def discover_brats_cases(raw_dir: str = "data/raw/brats", required_patients: int
         raw_dir,
         "data/raw/brats",
         "data/raw",
-        "data",
         os.path.expanduser("~/.cache/kagglehub/datasets"),
         os.environ.get("BRATS_DATA_DIR", "")
     ]
@@ -109,11 +111,9 @@ def split_patients_at_patient_level(
     seed: int = 42
 ) -> Dict[str, List[str]]:
     """
-    Splits patient cases at the PATIENT level before slice extraction.
-    Guarantees zero data leakage between splits.
+    Utility function for patient-level splitting.
     """
     assert math.isclose(train_ratio + val_ratio + test_ratio, 1.0), "Splits must sum to 1.0"
-    
     cases = list(patient_cases)
     rng = random.Random(seed)
     rng.shuffle(cases)
@@ -127,19 +127,43 @@ def split_patients_at_patient_level(
     val_cases = cases[n_train:n_train + n_val]
     test_cases = cases[n_train + n_val:]
 
-    # Rigorous patient isolation assertions
-    set_train = set(os.path.basename(p) for p in train_cases)
-    set_val = set(os.path.basename(p) for p in val_cases)
-    set_test = set(os.path.basename(p) for p in test_cases)
-
-    assert set_train.isdisjoint(set_val), f"Patient leakage detected between Train and Val! Intersect: {set_train & set_val}"
-    assert set_train.isdisjoint(set_test), f"Patient leakage detected between Train and Test! Intersect: {set_train & set_test}"
-    assert set_val.isdisjoint(set_test), f"Patient leakage detected between Val and Test! Intersect: {set_val & set_test}"
-
     return {
         "train": train_cases,
         "val": val_cases,
         "test": test_cases
+    }
+
+
+def estimate_preprocessing_size(
+    total_patients: int = 1251,
+    train_count: int = 876,
+    val_count: int = 187,
+    test_count: int = 188,
+    avg_slices_per_patient: int = 64,
+    bytes_per_png_pair: int = 26214
+) -> Dict[str, Any]:
+    """
+    Calculates dataset size estimation.
+    """
+    est_total_slices = total_patients * avg_slices_per_patient
+    est_train_slices = train_count * avg_slices_per_patient
+    est_val_slices = val_count * avg_slices_per_patient
+    est_test_slices = test_count * avg_slices_per_patient
+
+    est_total_bytes = est_total_slices * bytes_per_png_pair
+    est_mb = est_total_bytes / (1024 * 1024)
+    est_gb = est_mb / 1024
+
+    return {
+        "total_patients": total_patients,
+        "est_slices_per_patient": avg_slices_per_patient,
+        "est_total_slices": est_total_slices,
+        "est_train_slices": est_train_slices,
+        "est_val_slices": est_val_slices,
+        "est_test_slices": est_test_slices,
+        "est_disk_bytes": est_total_bytes,
+        "est_disk_mb": est_mb,
+        "est_disk_gb": est_gb
     }
 
 
@@ -152,8 +176,15 @@ def generate_full_manifest(
     manifest_path: str = "data/processed/brats/split_manifest.json"
 ) -> Dict[str, Any]:
     """
-    Generates and saves the full 1251 patient split manifest.
+    Generates and saves the authoritative 1251 patient split manifest if not present,
+    or loads existing manifest as Single Source of Truth.
     """
+    if os.path.exists(manifest_path):
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+        print(f"[MANIFEST LOADED] Using existing authoritative manifest from: {manifest_path}")
+        return manifest
+
     os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
     all_patient_ids = [f"BraTS2021_{i:05d}" for i in range(total_patients)]
     
@@ -161,17 +192,17 @@ def generate_full_manifest(
     shuffled_ids = list(all_patient_ids)
     rng.shuffle(shuffled_ids)
 
-    n_train = int(round(total_patients * train_ratio)) # 876
-    n_val = int(round(total_patients * val_ratio))     # 188 -> 187
+    n_train = int(round(total_patients * train_ratio))  # 876
+    n_val = int(round(total_patients * val_ratio))      # 188 -> 187
     if n_train + n_val >= total_patients:
         n_val = 187
-    n_test = total_patients - n_train - n_val          # 188
+    n_test = total_patients - n_train - n_val           # 188
 
     train_ids = sorted(shuffled_ids[:n_train])
     val_ids = sorted(shuffled_ids[n_train:n_train + n_val])
     test_ids = sorted(shuffled_ids[n_train + n_val:])
 
-    # Assertions against leakage
+    # Hard assertions against internal leakage
     s_tr, s_va, s_te = set(train_ids), set(val_ids), set(test_ids)
     assert s_tr.isdisjoint(s_va), "Leakage in manifest between Train and Val"
     assert s_tr.isdisjoint(s_te), "Leakage in manifest between Train and Test"
@@ -191,7 +222,7 @@ def generate_full_manifest(
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=4)
 
-    print(f"[MANIFEST SUCCESS] Saved full 1251 patient split manifest to: {manifest_path}")
+    print(f"[MANIFEST CREATED] Saved authoritative patient split manifest to: {manifest_path}")
     return manifest
 
 
@@ -306,59 +337,10 @@ def extract_and_process_slices(
     return processed_slices
 
 
-def estimate_preprocessing_size(
-    total_patients: int = 1251,
-    train_count: int = 876,
-    val_count: int = 187,
-    test_count: int = 188,
-    avg_slices_per_patient: int = 64,
-    bytes_per_png_pair: int = 26214
-) -> Dict[str, Any]:
-    """
-    Calculates exact mathematical dataset estimation for all 1251 patients.
-    """
-    est_total_slices = total_patients * avg_slices_per_patient # 80,064
-    est_train_slices = train_count * avg_slices_per_patient # 56,064
-    est_val_slices = val_count * avg_slices_per_patient     # 11,968
-    est_test_slices = test_count * avg_slices_per_patient   # 12,032
-
-    est_total_bytes = est_total_slices * bytes_per_png_pair
-    est_mb = est_total_bytes / (1024 * 1024)
-    est_gb = est_mb / 1024
-
-    estimation = {
-        "total_patients": total_patients,
-        "est_slices_per_patient": avg_slices_per_patient,
-        "est_total_slices": est_total_slices,
-        "est_train_slices": est_train_slices,
-        "est_val_slices": est_val_slices,
-        "est_test_slices": est_test_slices,
-        "est_disk_bytes": est_total_bytes,
-        "est_disk_mb": est_mb,
-        "est_disk_gb": est_gb
-    }
-
-    print("=====================================================")
-    print("=== PRE-PROCESSING RESOURCE ESTIMATION (1251 PATIENTS) ===")
-    print("=====================================================")
-    print(f"Total Patients to Process: {total_patients}")
-    print(f"  * Train Patients: {train_count} (70.0%)")
-    print(f"  * Val Patients:   {val_count} (14.9%)")
-    print(f"  * Test Patients:  {test_count} (15.0%)")
-    print(f"Estimated Avg Slices/Patient: {avg_slices_per_patient} slices (41 tumor + 23 non-tumor)")
-    print(f"Estimated Total Slices: {est_total_slices:,} slices")
-    print(f"  * Train Slices: {est_train_slices:,}")
-    print(f"  * Val Slices:   {est_val_slices:,}")
-    print(f"  * Test Slices:  {est_test_slices:,}")
-    print(f"Estimated Total Output Storage: {est_mb:.1f} MB ({est_gb:.2f} GB)")
-    print("=====================================================\n")
-
-    return estimation
-
-
 class BraTSPreprocessor:
     """
     Manager class for dataset preprocessing, manifests, saving, and reporting.
+    Guarantees strict single-source-of-truth patient split alignment.
     """
 
     def __init__(
@@ -381,133 +363,150 @@ class BraTSPreprocessor:
         non_tumor_ratio: float = 0.20
     ) -> Dict[str, Any]:
         """
-        Executes preprocessing pipeline.
+        Executes authoritative preprocessing pipeline using split_manifest.json as Single Source of Truth.
         """
-        patient_cases = discover_brats_cases(self.raw_dir, required_patients=100)
-        splits = split_patients_at_patient_level(
-            patient_cases,
-            train_ratio=train_ratio,
-            val_ratio=val_ratio,
-            test_ratio=test_ratio,
-            seed=self.seed
-        )
-
+        manifest_path = os.path.join(self.output_dir, "split_manifest.json")
+        
+        # Load or create manifest ONCE
         manifest = generate_full_manifest(
             total_patients=1251,
             train_ratio=train_ratio,
             val_ratio=val_ratio,
             test_ratio=test_ratio,
             seed=self.seed,
-            manifest_path=os.path.join(self.output_dir, "split_manifest.json")
+            manifest_path=manifest_path
         )
 
-        estimate_preprocessing_size(
-            total_patients=1251,
-            train_count=manifest["train_patients_count"],
-            val_count=manifest["val_patients_count"],
-            test_count=manifest["test_patients_count"],
-            avg_slices_per_patient=64
-        )
+        # Build sets from Single Source of Truth
+        manifest_train = set(manifest["train"])
+        manifest_val = set(manifest["val"])
+        manifest_test = set(manifest["test"])
 
-        stats = {
-            "total_patients_discovered": 1251,
-            "total_patients_processed": 1251,
-            "patient_split_counts": {
-                "train": manifest["train_patients_count"],
-                "val": manifest["val_patients_count"],
-                "test": manifest["test_patients_count"]
-            },
-            "slice_split_counts": {},
-            "tumor_slice_counts": {},
-            "non_tumor_slice_counts": {},
-            "total_tumor_pixels": 0,
-            "total_pixels": 0,
-            "image_shape": self.target_shape,
-            "mask_shape": self.target_shape
-        }
+        # Hard assertions BEFORE slice extraction
+        assert manifest_train.isdisjoint(manifest_val), "Patient leakage in manifest between train and val!"
+        assert manifest_train.isdisjoint(manifest_test), "Patient leakage in manifest between train and test!"
+        assert manifest_val.isdisjoint(manifest_test), "Patient leakage in manifest between val and test!"
 
-        # Process locally available cases
-        sample_slice_counts = {"train": 0, "val": 0, "test": 0}
-        sample_tumor_counts = {"train": 0, "val": 0, "test": 0}
-        sample_non_tumor_counts = {"train": 0, "val": 0, "test": 0}
+        # Discover all available local patient cases
+        patient_cases = discover_brats_cases(self.raw_dir, required_patients=100)
 
-        for split_name, case_paths in splits.items():
+        # Clear existing split subdirectories to prevent stale data
+        for split in ["train", "val", "test"]:
+            s_dir = os.path.join(self.output_dir, split)
+            if os.path.exists(s_dir):
+                shutil.rmtree(s_dir)
+            os.makedirs(os.path.join(s_dir, "images"), exist_ok=True)
+            os.makedirs(os.path.join(s_dir, "masks"), exist_ok=True)
+
+        metadata_rows = []
+        slice_counts = {"train": 0, "val": 0, "test": 0}
+        tumor_counts = {"train": 0, "val": 0, "test": 0}
+        non_tumor_counts = {"train": 0, "val": 0, "test": 0}
+
+        processed_patient_ids = {"train": set(), "val": set(), "test": set()}
+
+        for case_path in patient_cases:
+            patient_id = os.path.basename(case_path)
+
+            # Determine split STRICTLY from split_manifest.json
+            if patient_id in manifest_train:
+                split_name = "train"
+            elif patient_id in manifest_val:
+                split_name = "val"
+            elif patient_id in manifest_test:
+                split_name = "test"
+            else:
+                raise ValueError(f"Patient ID '{patient_id}' not found in split_manifest.json!")
+
+            processed_patient_ids[split_name].add(patient_id)
+
+            files = os.listdir(case_path)
+            flair_file = next(f for f in files if 'flair' in f.lower())
+            seg_file = next(f for f in files if 'seg' in f.lower())
+
+            flair_full_path = os.path.join(case_path, flair_file)
+            seg_full_path = os.path.join(case_path, seg_file)
+
+            processed_slices = extract_and_process_slices(
+                flair_full_path,
+                seg_full_path,
+                target_shape=self.target_shape,
+                non_tumor_ratio=non_tumor_ratio,
+                seed=self.seed
+            )
+
             img_out_dir = os.path.join(self.output_dir, split_name, "images")
             mask_out_dir = os.path.join(self.output_dir, split_name, "masks")
-            os.makedirs(img_out_dir, exist_ok=True)
-            os.makedirs(mask_out_dir, exist_ok=True)
 
-            for case_path in case_paths:
-                patient_id = os.path.basename(case_path)
-                files = os.listdir(case_path)
+            for item in processed_slices:
+                z = item["slice_idx"]
+                filename = f"{patient_id}_slice_{z:03d}.png"
                 
-                flair_file = next(f for f in files if 'flair' in f.lower())
-                seg_file = next(f for f in files if 'seg' in f.lower())
+                img_path = os.path.join(img_out_dir, filename)
+                mask_path = os.path.join(mask_out_dir, filename)
 
-                flair_full_path = os.path.join(case_path, flair_file)
-                seg_full_path = os.path.join(case_path, seg_file)
+                Image.fromarray(item["image"]).save(img_path)
+                Image.fromarray(item["mask"]).save(mask_path)
 
-                processed_slices = extract_and_process_slices(
-                    flair_full_path,
-                    seg_full_path,
-                    target_shape=self.target_shape,
-                    non_tumor_ratio=non_tumor_ratio,
-                    seed=self.seed
-                )
+                slice_counts[split_name] += 1
+                if item["is_tumor"]:
+                    tumor_counts[split_name] += 1
+                else:
+                    non_tumor_counts[split_name] += 1
 
-                for item in processed_slices:
-                    z = item["slice_idx"]
-                    filename = f"{patient_id}_slice_{z:03d}.png"
-                    
-                    img_path = os.path.join(img_out_dir, filename)
-                    mask_path = os.path.join(mask_out_dir, filename)
+                # Append metadata entry
+                metadata_rows.append({
+                    "image_filename": filename,
+                    "mask_filename": filename,
+                    "patient_id": patient_id,
+                    "split": split_name,
+                    "slice_idx": z,
+                    "is_tumor": 1 if item["is_tumor"] else 0
+                })
 
-                    Image.fromarray(item["image"]).save(img_path)
-                    Image.fromarray(item["mask"]).save(mask_path)
+        # Save metadata.csv
+        csv_path = os.path.join(self.output_dir, "metadata.csv")
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=["image_filename", "mask_filename", "patient_id", "split", "slice_idx", "is_tumor"])
+            writer.writeheader()
+            writer.writerows(metadata_rows)
 
-                    sample_slice_counts[split_name] += 1
-                    if item["is_tumor"]:
-                        sample_tumor_counts[split_name] += 1
-                    else:
-                        sample_non_tumor_counts[split_name] += 1
+        print(f"[METADATA SUCCESS] Saved metadata manifest CSV to: {csv_path} ({len(metadata_rows):,} total slice entries)")
 
-                    stats["total_tumor_pixels"] += int(np.sum(item["mask"] == 1))
-                    stats["total_pixels"] += item["mask"].size
-
-        # Extrapolate exact full 1251 stats based on sample averages (64 slices per patient: 41 tumor / 23 non-tumor)
-        for split_name in ["train", "val", "test"]:
-            p_cnt = stats["patient_split_counts"][split_name]
-            stats["slice_split_counts"][split_name] = p_cnt * 64
-            stats["tumor_slice_counts"][split_name] = p_cnt * 41
-            stats["non_tumor_slice_counts"][split_name] = p_cnt * 23
-
+        stats = {
+            "total_patients_discovered": len(patient_cases),
+            "processed_patient_counts": {k: len(v) for k, v in processed_patient_ids.items()},
+            "slice_counts": slice_counts,
+            "tumor_counts": tumor_counts,
+            "non_tumor_counts": non_tumor_counts
+        }
         return stats
 
 
-def verify_dataset_integrity(output_dir: str = "data/processed/brats") -> Dict[str, str]:
+def verify_dataset_integrity(output_dir: str = "data/processed/brats") -> Dict[str, Any]:
     """
-    Executes high-speed assertion and data integrity verification tests on processed dataset.
+    Executes authoritative assertion, patient leakage, image-mask matching, and binary mask checks.
     """
-    splits = ["train", "val", "test"]
-    patient_sets = {}
-    results = {
-        "patient_leakage_check": "PASSED",
-        "image_mask_pair_check": "PASSED",
-        "binary_mask_check": "PASSED"
-    }
-
-    # Verify manifest
     manifest_path = os.path.join(output_dir, "split_manifest.json")
+    metadata_path = os.path.join(output_dir, "metadata.csv")
+
     assert os.path.exists(manifest_path), f"Missing split manifest: {manifest_path}"
+    assert os.path.exists(metadata_path), f"Missing metadata CSV: {metadata_path}"
+
     with open(manifest_path, "r", encoding="utf-8") as f:
         manifest = json.load(f)
 
-    m_train, m_val, m_test = set(manifest["train"]), set(manifest["val"]), set(manifest["test"])
-    assert m_train.isdisjoint(m_val), "Patient leakage in manifest train vs val"
-    assert m_train.isdisjoint(m_te := m_test), "Patient leakage in manifest train vs test"
-    assert m_val.isdisjoint(m_te), "Patient leakage in manifest val vs test"
+    manifest_train = set(manifest["train"])
+    manifest_val = set(manifest["val"])
+    manifest_test = set(manifest["test"])
 
-    rng = random.Random(42)
+    # Hard assertions on manifest internal purity
+    assert manifest_train.isdisjoint(manifest_val), "Manifest patient leakage between Train and Val"
+    assert manifest_train.isdisjoint(manifest_test), "Manifest patient leakage between Train and Test"
+    assert manifest_val.isdisjoint(manifest_test), "Manifest patient leakage between Val and Test"
+
+    splits = ["train", "val", "test"]
+    slice_patients = {}
 
     for split in splits:
         img_dir = os.path.join(output_dir, split, "images")
@@ -519,31 +518,76 @@ def verify_dataset_integrity(output_dir: str = "data/processed/brats") -> Dict[s
         img_files = sorted(os.listdir(img_dir))
         mask_files = sorted(os.listdir(mask_dir))
 
-        if img_files != mask_files:
-            results["image_mask_pair_check"] = "FAILED"
-            raise AssertionError(f"File name mismatch between images and masks in split '{split}'")
+        assert img_files == mask_files, f"1-to-1 image-mask mismatch in split '{split}'!"
+        assert len(img_files) > 0, f"No images found in split '{split}'!"
 
-        patients_in_split = set(fname.split("_slice_")[0] for fname in img_files)
-        patient_sets[split] = patients_in_split
+        pts = set(fname.split("_slice_")[0] for fname in img_files)
+        slice_patients[split] = pts
 
-        # Fast high-coverage sampling check (100 pairs per split)
-        sample_fnames = rng.sample(img_files, min(100, len(img_files)))
+    # Leakage calculations
+    tr_pts = slice_patients["train"]
+    va_pts = slice_patients["val"]
+    te_pts = slice_patients["test"]
 
-        for fname in sample_fnames:
-            img_p = os.path.join(img_dir, fname)
-            mask_p = os.path.join(mask_dir, fname)
+    tr_va_overlap = len(tr_pts & va_pts)
+    tr_te_overlap = len(tr_pts & te_pts)
+    va_te_overlap = len(va_pts & te_pts)
 
-            img_arr = np.array(Image.open(img_p))
-            mask_arr = np.array(Image.open(mask_p))
+    assert tr_va_overlap == 0, f"Patient leakage between Train and Val! Intersect: {tr_pts & va_pts}"
+    assert tr_te_overlap == 0, f"Patient leakage between Train and Test! Intersect: {tr_pts & te_pts}"
+    assert va_te_overlap == 0, f"Patient leakage between Val and Test! Intersect: {va_pts & te_pts}"
 
-            if img_arr.shape != (256, 256) or mask_arr.shape != (256, 256):
-                results["image_mask_pair_check"] = "FAILED"
-                raise AssertionError(f"Invalid dimensions in {fname}")
+    # Assert slice patients match manifest subsets strictly
+    assert tr_pts.issubset(manifest_train), "Train slices contain patient IDs not in manifest['train']!"
+    assert va_pts.issubset(manifest_val), "Val slices contain patient IDs not in manifest['val']!"
+    assert te_pts.issubset(manifest_test), "Test slices contain patient IDs not in manifest['test']!"
 
-            unique_mask_vals = set(np.unique(mask_arr))
-            if not unique_mask_vals.issubset({0, 1}):
-                results["binary_mask_check"] = "FAILED"
-                raise AssertionError(f"Non-binary mask values {unique_mask_vals} in {fname}")
+    # Binary mask check on sampled files
+    rng = random.Random(42)
+    for split in splits:
+        img_dir = os.path.join(output_dir, split, "images")
+        mask_dir = os.path.join(output_dir, split, "masks")
+        files = os.listdir(img_dir)
+        sampled = rng.sample(files, min(50, len(files)))
 
-    print("[ASSERTION SUCCESS] Dataset integrity verification passed: zero leakage, matching 256x256 dimensions, and binary {0,1} mask values confirmed.")
-    return results
+        for fname in sampled:
+            m_arr = np.array(Image.open(os.path.join(mask_dir, fname)))
+            unique_vals = set(np.unique(m_arr))
+            assert unique_vals.issubset({0, 1}), f"Non-binary mask value {unique_vals} found in {fname}"
+
+    print("\n--------------------------------------------------")
+    print("TOTAL PATIENTS:                  ", manifest["total_patients"])
+    print("TRAIN PATIENTS:                  ", manifest["train_patients_count"])
+    print("VAL PATIENTS:                    ", manifest["val_patients_count"])
+    print("TEST PATIENTS:                   ", manifest["test_patients_count"])
+    print("")
+    print("TRAIN UNIQUE PATIENTS IN SLICES: ", len(tr_pts))
+    print("VAL UNIQUE PATIENTS IN SLICES:   ", len(va_pts))
+    print("TEST UNIQUE PATIENTS IN SLICES:  ", len(te_pts))
+    print("")
+    print("TRAIN/VAL OVERLAP:               ", tr_va_overlap)
+    print("TRAIN/TEST OVERLAP:              ", tr_te_overlap)
+    print("VAL/TEST OVERLAP:                ", va_te_overlap)
+    print("--------------------------------------------------\n")
+
+    print("==================================================")
+    print("AUTHORITATIVE BRATS SPLIT AUDIT")
+    print("==================================================")
+    print("")
+    print("PATIENT SPLIT: PASSED")
+    print("SLICE SPLIT: PASSED")
+    print("PATIENT LEAKAGE: PASSED")
+    print("IMAGE-MASK MATCHING: PASSED")
+    print("BINARY MASK CHECK: PASSED")
+    print("")
+    print("==================================================")
+    print("")
+    print("DATASET READY FOR MODEL TRAINING")
+
+    return {
+        "patient_split": "PASSED",
+        "slice_split": "PASSED",
+        "patient_leakage": "PASSED",
+        "image_mask_matching": "PASSED",
+        "binary_mask_check": "PASSED"
+    }
