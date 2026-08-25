@@ -13,7 +13,11 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from src.models.unet import UNet2D, count_parameters
-from src.evaluation.segmentation_metrics import calculate_segmentation_metrics, compute_binary_metrics_single_image, compute_global_pixel_metrics
+from src.evaluation.segmentation_metrics import (
+    ConfusionMatrixAccumulator,
+    compute_binary_metrics_single_image,
+    compute_global_pixel_metrics
+)
 
 
 def set_seed(seed: int = 42):
@@ -48,12 +52,10 @@ class CombinedDiceBCELoss(nn.Module):
         bce_loss = self.bce(logits, targets)
 
         probs = torch.sigmoid(logits)
-        probs_flat = probs.view(-1)
-        targets_flat = targets.view(-1)
-
-        intersection = (probs_flat * targets_flat).sum()
-        dice_score = (2.0 * intersection + self.smooth) / (probs_flat.sum() + targets_flat.sum() + self.smooth)
-        dice_loss = 1.0 - dice_score
+        intersection = (probs * targets).sum(dim=(1, 2, 3))
+        cardinality = probs.sum(dim=(1, 2, 3)) + targets.sum(dim=(1, 2, 3))
+        dice_score = (2.0 * intersection + self.smooth) / (cardinality + self.smooth)
+        dice_loss = 1.0 - dice_score.mean()
 
         total_loss = (self.weight_dice * dice_loss) + (self.weight_bce * bce_loss)
         return total_loss
@@ -101,15 +103,16 @@ class UNetTrainer:
         else:
             self.scaler = None
 
-        self.best_val_dice = -1.0
+        self.best_val_tumor_dice = -1.0
         self.history = {
             "train_loss": [],
             "val_loss": [],
-            "val_dice": [],
-            "val_iou": [],
+            "val_global_dice": [],
+            "val_global_iou": [],
             "val_precision": [],
             "val_recall": [],
-            "val_f1": []
+            "val_tumor_dice": [],
+            "val_tumor_iou": []
         }
 
     def train_epoch(self, max_batches: Optional[int] = None) -> float:
@@ -145,18 +148,11 @@ class UNetTrainer:
         epoch_loss = running_loss / max(1, total_samples)
         return epoch_loss
 
-    def validate_epoch(self, max_batches: Optional[int] = None) -> Tuple[float, Dict[str, float]]:
+    def validate_epoch(self, max_batches: Optional[int] = None) -> Tuple[float, Dict[str, Any]]:
         self.model.eval()
         running_loss = 0.0
-
-        accumulated_metrics = {
-            "dice": 0.0,
-            "iou": 0.0,
-            "precision": 0.0,
-            "recall": 0.0,
-            "f1": 0.0
-        }
         total_samples = 0
+        accumulator = ConfusionMatrixAccumulator()
 
         with torch.no_grad():
             for b_idx, (images, masks) in enumerate(self.val_loader):
@@ -178,23 +174,16 @@ class UNetTrainer:
                 total_samples += images.size(0)
 
                 probs = torch.sigmoid(logits)
-                b_metrics = calculate_segmentation_metrics(
-                    probs, masks, threshold=self.threshold
-                )
-                for k in accumulated_metrics:
-                    accumulated_metrics[k] += b_metrics[k] * images.size(0)
+                accumulator.update(probs, masks, threshold=self.threshold)
 
         val_loss = running_loss / max(1, total_samples)
-        val_metrics = {
-            k: v / max(1, total_samples)
-            for k, v in accumulated_metrics.items()
-        }
+        val_metrics = accumulator.get_metrics()
 
         return val_loss, val_metrics
 
     def fit(
         self,
-        epochs: int = 3,
+        epochs: int = 30,
         patience: int = 10,
         max_train_batches: Optional[int] = None,
         max_val_batches: Optional[int] = None
@@ -210,49 +199,57 @@ class UNetTrainer:
             val_loss, val_metrics = self.validate_epoch(max_batches=max_val_batches)
             elapsed = time.time() - t0
 
-            val_dice = val_metrics["dice"]
-            val_iou = val_metrics["iou"]
-            val_precision = val_metrics["precision"]
-            val_recall = val_metrics["recall"]
-            val_f1 = val_metrics["f1"]
+            val_global_dice = val_metrics["val_global_dice"]
+            val_global_iou = val_metrics["val_global_iou"]
+            val_precision = val_metrics["val_precision"]
+            val_recall = val_metrics["val_recall"]
+            val_tumor_dice = val_metrics["val_tumor_dice"]
+            val_tumor_iou = val_metrics["val_tumor_iou"]
+            gpu_mem = torch.cuda.memory_allocated() / (1024 ** 2) if self.device.type == "cuda" else 0.0
 
             self.history["train_loss"].append(train_loss)
             self.history["val_loss"].append(val_loss)
-            self.history["val_dice"].append(val_dice)
-            self.history["val_iou"].append(val_iou)
+            self.history["val_global_dice"].append(val_global_dice)
+            self.history["val_global_iou"].append(val_global_iou)
             self.history["val_precision"].append(val_precision)
             self.history["val_recall"].append(val_recall)
-            self.history["val_f1"].append(val_f1)
+            self.history["val_tumor_dice"].append(val_tumor_dice)
+            self.history["val_tumor_iou"].append(val_tumor_iou)
 
             print(
-                f"Epoch {epoch:02d}/{epochs:02d} [{elapsed:.1f}s] | "
-                f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | "
-                f"Val Dice: {val_dice:.4f} | Val IoU: {val_iou:.4f} | "
-                f"Val Precision: {val_precision:.4f} | Val Recall: {val_recall:.4f}"
+                f"Epoch {epoch:02d}/{epochs:02d} [{elapsed:.1f}s]\n"
+                f"  Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}\n"
+                f"  Val Global Dice: {val_global_dice:.4f} | Val Global IoU: {val_global_iou:.4f} | "
+                f"Val Precision: {val_precision:.4f} | Val Recall: {val_recall:.4f}\n"
+                f"  Val Tumor Dice: {val_tumor_dice:.4f} | Val Tumor IoU: {val_tumor_iou:.4f}\n"
+                f"  Learning Rate: {self.lr} | GPU Memory: {gpu_mem:.2f} MB",
+                flush=True
             )
 
             latest_ckpt_path = os.path.join(self.checkpoint_dir, "baseline_01_flair_unet_latest.pt")
             best_ckpt_path = os.path.join(self.checkpoint_dir, self.best_ckpt_name)
 
-            torch.save({
+            # Checkpoint metadata storing all 10 required keys
+            ckpt_dict = {
                 "epoch": epoch,
                 "model_state_dict": self.model.state_dict(),
                 "optimizer_state_dict": self.optimizer.state_dict(),
-                "val_dice": val_dice,
+                "val_global_dice": val_global_dice,
+                "val_global_iou": val_global_iou,
+                "val_precision": val_precision,
+                "val_recall": val_recall,
+                "val_tumor_dice": val_tumor_dice,
+                "val_tumor_iou": val_tumor_iou,
                 "val_loss": val_loss
-            }, latest_ckpt_path)
+            }
 
-            if val_dice > self.best_val_dice:
-                self.best_val_dice = val_dice
+            torch.save(ckpt_dict, latest_ckpt_path)
+
+            if val_tumor_dice > self.best_val_tumor_dice:
+                self.best_val_tumor_dice = val_tumor_dice
                 patience_counter = 0
-                torch.save({
-                    "epoch": epoch,
-                    "model_state_dict": self.model.state_dict(),
-                    "optimizer_state_dict": self.optimizer.state_dict(),
-                    "val_dice": val_dice,
-                    "val_loss": val_loss
-                }, best_ckpt_path)
-                print(f"   [CHECKPOINT] Saved new best model to {best_ckpt_path} (Val Dice: {val_dice:.4f})")
+                torch.save(ckpt_dict, best_ckpt_path)
+                print(f"   [CHECKPOINT] Saved new best model to {best_ckpt_path} (Val Tumor Dice: {val_tumor_dice:.4f})")
             else:
                 patience_counter += 1
                 if patience_counter >= patience:

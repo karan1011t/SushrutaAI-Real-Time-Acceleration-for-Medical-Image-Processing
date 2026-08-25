@@ -1,24 +1,25 @@
 {
-    "experiment_name": "Baseline-01: FLAIR-only 2D U-Net",
-    "random_seed": 42,
-    "batch_size": 16,
-    "learning_rate": 0.001,
-    "epochs": 12,
-    "smoke_test_epochs": 3,
-    "base_channels": 32,
-    "image_size": [
-        256,
-        256
-    ],
-    "loss_weights": {
-        "weight_dice": 0.5,
-        "weight_bce": 0.5
-    },
-    "threshold": 0.5,
-    "num_workers": 0,
-    "data_dir": "data/processed/brats",
-    "checkpoint_dir": "results/models",
-    "best_ckpt_name": "baseline_01_flair_unet_best.pt",
-    "metrics_dir": "results/metrics",
-    "figures_dir": "results/figures"
+  "experiment_name": "Baseline-01: FLAIR-only 2D U-Net",
+  "model_name": "UNet2D",
+  "in_channels": 1,
+  "out_channels": 1,
+  "base_channels": 32,
+  "total_parameters": 4317825,
+  "batch_size": 32,
+  "epochs": 30,
+  "learning_rate": 0.001,
+  "optimizer": "AdamW",
+  "loss_function": "CombinedDiceBCELoss (0.5 Dice + 0.5 BCE)",
+  "seed": 42,
+  "amp_enabled": true,
+  "device": "cuda",
+  "gpu_name": "NVIDIA GeForce RTX 2050",
+  "data_summary": {
+    "train_slices": 13150,
+    "train_patients": 245,
+    "val_slices": 3118,
+    "val_patients": 58,
+    "test_slices": 3076,
+    "test_patients": 57
+  }
 }

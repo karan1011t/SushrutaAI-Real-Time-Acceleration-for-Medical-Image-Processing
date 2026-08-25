@@ -27,12 +27,14 @@ class BraTS2DDataset(Dataset):
         data_dir: str = "data/processed/brats",
         split: str = "train",
         augment: bool = False,
+        preload: bool = False,
         seed: int = 42
     ):
         super().__init__()
         self.data_dir = data_dir
         self.split = split.lower()
         self.augment = augment
+        self.preload = preload
         self.seed = seed
 
         self.img_dir = os.path.join(data_dir, self.split, "images")
@@ -56,37 +58,54 @@ class BraTS2DDataset(Dataset):
             if fname not in mask_filenames:
                 raise FileNotFoundError(f"Missing corresponding mask file for image '{fname}' in {self.mask_dir}")
 
+        self.images_tensor: Optional[torch.Tensor] = None
+        self.masks_tensor: Optional[torch.Tensor] = None
+        if self.preload:
+            n_samples = len(self.image_filenames)
+            print(f"[DATASET] Preloading '{self.split}' split ({n_samples:,} slices) into float32 Tensor RAM...", flush=True)
+            self.images_tensor = torch.empty((n_samples, 1, 256, 256), dtype=torch.float32)
+            self.masks_tensor = torch.empty((n_samples, 1, 256, 256), dtype=torch.float32)
+            for i, fname in enumerate(self.image_filenames):
+                img_path = os.path.join(self.img_dir, fname)
+                mask_path = os.path.join(self.mask_dir, fname)
+                img_pil = Image.open(img_path)
+                mask_pil = Image.open(mask_path)
+                self.images_tensor[i, 0] = torch.from_numpy(np.array(img_pil, dtype=np.float32) / 255.0)
+                self.masks_tensor[i, 0] = torch.from_numpy((np.array(mask_pil) > 127).astype(np.float32))
+            print(f"[DATASET] Finished preloading '{self.split}' split ({self.images_tensor.shape}) into float32 Tensor RAM.", flush=True)
+
     def __len__(self) -> int:
         return len(self.image_filenames)
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        fname = self.image_filenames[idx]
-        img_path = os.path.join(self.img_dir, fname)
-        mask_path = os.path.join(self.mask_dir, fname)
+        if self.preload and self.images_tensor is not None and self.masks_tensor is not None:
+            img_tensor = self.images_tensor[idx]
+            mask_tensor = self.masks_tensor[idx]
+        else:
+            fname = self.image_filenames[idx]
+            img_path = os.path.join(self.img_dir, fname)
+            mask_path = os.path.join(self.mask_dir, fname)
 
-        img_pil = Image.open(img_path)
-        mask_pil = Image.open(mask_path)
+            img_pil = Image.open(img_path)
+            mask_pil = Image.open(mask_path)
 
-        img_arr = np.array(img_pil, dtype=np.float32) / 255.0
-        mask_arr = np.array(mask_pil, dtype=np.float32)
+            img_arr = np.array(img_pil, dtype=np.float32) / 255.0
+            mask_arr = np.array(mask_pil, dtype=np.float32)
+            mask_arr = np.where(mask_arr > 0.5, 1.0, 0.0).astype(np.float32)
 
-        # Ensure binary thresholding on mask
-        mask_arr = np.where(mask_arr > 0.5, 1.0, 0.0).astype(np.float32)
+            img_tensor = torch.from_numpy(np.ascontiguousarray(img_arr)).unsqueeze(0).float()
+            mask_tensor = torch.from_numpy(np.ascontiguousarray(mask_arr)).unsqueeze(0).float()
 
         # Simple medical augmentation (horizontal flip & 90-degree steps)
         if self.augment:
             rng = random.Random(self.seed + idx)
             if rng.random() > 0.5:
-                img_arr = np.fliplr(img_arr)
-                mask_arr = np.fliplr(mask_arr)
+                img_tensor = torch.flip(img_tensor, dims=[2])
+                mask_tensor = torch.flip(mask_tensor, dims=[2])
             k = rng.choice([0, 1, 2, 3])
             if k > 0:
-                img_arr = np.rot90(img_arr, k)
-                mask_arr = np.rot90(mask_arr, k)
-
-        # Convert to float32 tensors with channel dimension [1, H, W]
-        img_tensor = torch.from_numpy(np.ascontiguousarray(img_arr)).unsqueeze(0).float()
-        mask_tensor = torch.from_numpy(np.ascontiguousarray(mask_arr)).unsqueeze(0).float()
+                img_tensor = torch.rot90(img_tensor, k, dims=[1, 2])
+                mask_tensor = torch.rot90(mask_tensor, k, dims=[1, 2])
 
         return img_tensor, mask_tensor
 
@@ -96,14 +115,15 @@ def create_brats_dataloaders(
     batch_size: int = 4,
     num_workers: int = 0,
     augment_train: bool = False,
+    preload: bool = False,
     seed: int = 42
 ) -> Dict[str, DataLoader]:
     """
     Factory function to create DataLoader instances for train, val, and test splits.
     """
-    train_dataset = BraTS2DDataset(data_dir=data_dir, split="train", augment=augment_train, seed=seed)
-    val_dataset = BraTS2DDataset(data_dir=data_dir, split="val", augment=False, seed=seed)
-    test_dataset = BraTS2DDataset(data_dir=data_dir, split="test", augment=False, seed=seed)
+    train_dataset = BraTS2DDataset(data_dir=data_dir, split="train", augment=augment_train, preload=preload, seed=seed)
+    val_dataset = BraTS2DDataset(data_dir=data_dir, split="val", augment=False, preload=preload, seed=seed)
+    test_dataset = BraTS2DDataset(data_dir=data_dir, split="test", augment=False, preload=preload, seed=seed)
 
     train_loader = DataLoader(
         train_dataset,
@@ -128,6 +148,12 @@ def create_brats_dataloaders(
         num_workers=num_workers,
         pin_memory=torch.cuda.is_available()
     )
+
+    return {
+        "train": train_loader,
+        "val": val_loader,
+        "test": test_loader
+    }
 
     return {
         "train": train_loader,
