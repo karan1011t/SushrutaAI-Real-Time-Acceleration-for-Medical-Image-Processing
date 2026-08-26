@@ -71,7 +71,10 @@ class BraTS2DDataset(Dataset):
                 img_pil = Image.open(img_path)
                 mask_pil = Image.open(mask_path)
                 self.images_tensor[i, 0] = torch.from_numpy(np.array(img_pil, dtype=np.float32) / 255.0)
-                self.masks_tensor[i, 0] = torch.from_numpy((np.array(mask_pil) > 127).astype(np.float32))
+                mask_np = (np.array(mask_pil) > 0.5).astype(np.float32)
+                assert mask_np.shape == (256, 256), f"Invalid preloaded mask shape: {mask_np.shape}"
+                assert all(v in (0.0, 1.0) for v in np.unique(mask_np)), f"Preloaded mask values must be binary {{0, 1}}, got {np.unique(mask_np)}"
+                self.masks_tensor[i, 0] = torch.from_numpy(mask_np)
             print(f"[DATASET] Finished preloading '{self.split}' split ({self.images_tensor.shape}) into float32 Tensor RAM.", flush=True)
 
     def __len__(self) -> int:
@@ -95,6 +98,11 @@ class BraTS2DDataset(Dataset):
 
             img_tensor = torch.from_numpy(np.ascontiguousarray(img_arr)).unsqueeze(0).float()
             mask_tensor = torch.from_numpy(np.ascontiguousarray(mask_arr)).unsqueeze(0).float()
+
+        # Validation assertions for loaded mask
+        assert mask_tensor.shape == (1, 256, 256), f"Invalid mask shape: {mask_tensor.shape}"
+        unique_vals = torch.unique(mask_tensor).tolist()
+        assert all(v in (0.0, 1.0) for v in unique_vals), f"Mask values must be strictly binary {{0, 1}}, got {unique_vals}"
 
         # Simple medical augmentation (horizontal flip & 90-degree steps)
         if self.augment:
@@ -148,12 +156,6 @@ def create_brats_dataloaders(
         num_workers=num_workers,
         pin_memory=torch.cuda.is_available()
     )
-
-    return {
-        "train": train_loader,
-        "val": val_loader,
-        "test": test_loader
-    }
 
     return {
         "train": train_loader,
