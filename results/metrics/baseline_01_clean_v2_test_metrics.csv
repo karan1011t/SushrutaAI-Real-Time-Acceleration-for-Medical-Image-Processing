@@ -1,0 +1,20 @@
+metric_category,metric_name,value
+checkpoint,best_epoch,4
+checkpoint,val_tumor_dice_stored,0.9960773991525825
+test_data,test_patients,57
+test_data,test_slices,3076
+test_data,tumor_slices,2337
+test_data,empty_slices,739
+global_pixel,dice,0.9984871000834108
+global_pixel,iou,0.996978770983948
+global_pixel,precision,0.9989275025358928
+global_pixel,recall,0.9980470857849194
+global_pixel,f1,0.9984871000834108
+tumor_only_slice,dice,0.9959291341624099
+tumor_only_slice,iou,0.993426753304481
+tumor_only_slice,precision,0.9968480512684719
+tumor_only_slice,recall,0.9965710263503226
+tumor_only_slice,f1,0.9959291328616666
+performance,inference_latency_ms,6.91
+performance,fps,144.8
+performance,gpu_name,NVIDIA GeForce RTX 2050

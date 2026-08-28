@@ -1,0 +1,22 @@
+{
+  "experiment_name": "BASELINE-02: Binary Tumor Classification",
+  "model_name": "BinaryTumorClassifier",
+  "total_parameters": 405313,
+  "in_channels": 1,
+  "base_channels": 32,
+  "batch_size": 32,
+  "epochs": 5,
+  "best_epoch": 5,
+  "best_val_f1": 0.9887733887733888,
+  "learning_rate": 0.001,
+  "optimizer": "AdamW",
+  "loss_function": "BCEWithLogitsLoss",
+  "seed": 42,
+  "device": "cuda",
+  "gpu_name": "NVIDIA GeForce RTX 2050",
+  "dataset_summary": {
+    "train_slices": 13150,
+    "val_slices": 3118,
+    "test_slices": 3076
+  }
+}

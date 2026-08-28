@@ -162,6 +162,9 @@ class ConfusionMatrixAccumulator:
         self.total_tn = 0
         self.tumor_slice_dices: List[float] = []
         self.tumor_slice_ious: List[float] = []
+        self.tumor_slice_precisions: List[float] = []
+        self.tumor_slice_recalls: List[float] = []
+        self.tumor_slice_f1s: List[float] = []
         self.all_slice_dices: List[float] = []
         self.num_empty_slices = 0
         self.num_tumor_slices = 0
@@ -213,16 +216,49 @@ class ConfusionMatrixAccumulator:
             )
         )
 
+        prec = torch.where(
+            is_empty_gt & is_empty_pred,
+            one_tensor,
+            torch.where(
+                is_empty_gt | is_empty_pred,
+                zero_tensor,
+                tp / (tp + fp + 1e-12)
+            )
+        )
+
+        rec = torch.where(
+            is_empty_gt & is_empty_pred,
+            one_tensor,
+            torch.where(
+                is_empty_gt | is_empty_pred,
+                zero_tensor,
+                tp / (tp + fn + 1e-12)
+            )
+        )
+
+        denom_f1_slice = prec + rec
+        f1 = torch.where(
+            denom_f1_slice > 0.0,
+            (2.0 * prec * rec) / (denom_f1_slice + 1e-12),
+            zero_tensor
+        )
+
         dice_list = dice.cpu().tolist()
         iou_list = iou.cpu().tolist()
+        prec_list = prec.cpu().tolist()
+        rec_list = rec.cpu().tolist()
+        f1_list = f1.cpu().tolist()
         is_tumor_slice_list = (~is_empty_gt).cpu().tolist()
 
-        for d, i, is_tumor in zip(dice_list, iou_list, is_tumor_slice_list):
+        for d, i, pr, rc, f, is_tumor in zip(dice_list, iou_list, prec_list, rec_list, f1_list, is_tumor_slice_list):
             self.all_slice_dices.append(d)
             if is_tumor:
                 self.num_tumor_slices += 1
                 self.tumor_slice_dices.append(d)
                 self.tumor_slice_ious.append(i)
+                self.tumor_slice_precisions.append(pr)
+                self.tumor_slice_recalls.append(rc)
+                self.tumor_slice_f1s.append(f)
             else:
                 self.num_empty_slices += 1
 
@@ -230,6 +266,9 @@ class ConfusionMatrixAccumulator:
         global_m = compute_global_pixel_metrics(self.total_tp, self.total_fp, self.total_fn, self.total_tn)
         val_tumor_dice = float(np.mean(self.tumor_slice_dices)) if len(self.tumor_slice_dices) > 0 else 0.0
         val_tumor_iou = float(np.mean(self.tumor_slice_ious)) if len(self.tumor_slice_ious) > 0 else 0.0
+        val_tumor_precision = float(np.mean(self.tumor_slice_precisions)) if len(self.tumor_slice_precisions) > 0 else 0.0
+        val_tumor_recall = float(np.mean(self.tumor_slice_recalls)) if len(self.tumor_slice_recalls) > 0 else 0.0
+        val_tumor_f1 = float(np.mean(self.tumor_slice_f1s)) if len(self.tumor_slice_f1s) > 0 else 0.0
         val_macro_all_dice = float(np.mean(self.all_slice_dices)) if len(self.all_slice_dices) > 0 else 0.0
 
         return {
@@ -237,8 +276,12 @@ class ConfusionMatrixAccumulator:
             "val_global_iou": global_m["iou"],
             "val_precision": global_m["precision"],
             "val_recall": global_m["recall"],
+            "val_f1": global_m["f1"],
             "val_tumor_dice": val_tumor_dice,
             "val_tumor_iou": val_tumor_iou,
+            "val_tumor_precision": val_tumor_precision,
+            "val_tumor_recall": val_tumor_recall,
+            "val_tumor_f1": val_tumor_f1,
             "val_macro_all_dice": val_macro_all_dice,
             "num_tumor_slices": self.num_tumor_slices,
             "num_empty_slices": self.num_empty_slices

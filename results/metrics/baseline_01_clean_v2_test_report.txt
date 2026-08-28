@@ -1,0 +1,35 @@
+==================================================
+SUSHRUTA — BASELINE-01-CLEAN-V2
+HELD-OUT TEST EVALUATION
+==================================================
+
+CHECKPOINT
+Best Epoch: 4
+Validation Tumor Dice: 0.9961
+
+TEST DATA
+Test Patients: 57
+Test Slices: 3076
+Tumor Slices: 2337
+Non-Tumor Slices: 739
+
+GLOBAL PIXEL METRICS
+Dice: 0.9985
+IoU: 0.9970
+Precision: 0.9989
+Recall: 0.9980
+F1: 0.9985
+
+TUMOR-ONLY SLICE METRICS
+Dice: 0.9959
+IoU: 0.9934
+Precision: 0.9968
+Recall: 0.9966
+F1: 0.9959
+
+INFERENCE
+Latency: 6.91 ms/slice
+FPS: 144.8
+GPU: NVIDIA GeForce RTX 2050
+
+==================================================
