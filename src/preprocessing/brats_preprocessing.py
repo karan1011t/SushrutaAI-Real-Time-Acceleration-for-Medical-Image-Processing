@@ -76,7 +76,7 @@ def discover_brats_cases(raw_dir: str = "data/raw/brats", required_patients: int
     """
     Automatically discovers all valid patient case directories containing BraTS MRI NIfTI files.
     """
-    ensure_full_brats_dataset(raw_dir, total_patients=required_patients)
+    # Safety: discovery must not generate or modify dataset files.
     
     candidate_roots = [
         raw_dir,
@@ -387,10 +387,27 @@ class BraTSPreprocessor:
         assert manifest_train.isdisjoint(manifest_test), "Patient leakage in manifest between train and test!"
         assert manifest_val.isdisjoint(manifest_test), "Patient leakage in manifest between val and test!"
 
-        # Discover all available local patient cases
+        # Discover cases and validate everything before touching processed data.
         patient_cases = discover_brats_cases(self.raw_dir, required_patients=100)
+        discovered_ids = {os.path.basename(p) for p in patient_cases}
+        manifest_ids = manifest_train | manifest_val | manifest_test
 
-        # Clear existing split subdirectories to prevent stale data
+        missing_cases = sorted(manifest_ids - discovered_ids)
+        unlisted_cases = sorted(discovered_ids - manifest_ids)
+
+        if missing_cases or unlisted_cases:
+            raise RuntimeError(
+                "Preprocessing aborted safely: discovered cases do not match the "
+                "split manifest. No processed split folders were cleared. "
+                f"Manifest IDs: {len(manifest_ids)}; "
+                f"discovered IDs: {len(discovered_ids)}; "
+                f"missing cases: {len(missing_cases)}; "
+                f"unlisted cases: {len(unlisted_cases)}. "
+                f"Missing examples: {missing_cases[:10]}; "
+                f"unlisted examples: {unlisted_cases[:10]}"
+            )
+
+        # Clear existing split subdirectories only after validation succeeds.
         for split in ["train", "val", "test"]:
             s_dir = os.path.join(self.output_dir, split)
             if os.path.exists(s_dir):

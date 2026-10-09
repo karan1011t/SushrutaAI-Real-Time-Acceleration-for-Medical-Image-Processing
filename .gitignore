@@ -8,17 +8,50 @@ env/
 # Jupyter
 .ipynb_checkpoints/
 
-# Dataset
+# Security & Environment Variables
+.env
+.env.*
+!.env.example
+
+# Local Patch Backups & Swap Files
+*.bak
+*.swp
+*~
+
+# Frontend Build & Dependencies
+frontend/node_modules/
+frontend/dist/
+
+# Dataset Volumes, Processed & External Data
 data/raw/
 data/processed/
+data/external/
+*.nii
+*.nii.gz
 
-# Model weights
+# Model weights & Local Case Inventory CSV
 *.pt
 *.pth
 *.ckpt
-
-# Results
 results/models/
+results/audit/DATASET_CASE_INVENTORY.csv
+
+# Temporary Root Diagnostic & Scratch Scripts
+scratch/
+audit_*.py
+check_*.py
+compare_*.py
+diagnose_*.py
+inspect_*.py
+patch_*.py
+verify_*.py
+visualize_*.py
+evaluate_africa_slice.py
+find_africa_tumor_slices.py
+save_provenance_report.py
+summarize_training_distribution.py
+test_manifest_guard_logic.py
+test_run_abort_safely.py
 
 # IDE / OS
 .vscode/

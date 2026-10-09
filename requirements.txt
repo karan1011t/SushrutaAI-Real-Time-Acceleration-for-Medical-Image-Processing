@@ -1,0 +1,18 @@
+# Sushruta Backend Runtime & Preprocessing Dependencies
+# Verified Python 3.13 environment package declarations.
+# Note: PyTorch CPU/CUDA installation may require platform-specific index flags
+# (e.g. --index-url https://download.pytorch.org/whl/cu128 or --extra-index-url).
+
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
+pydantic==2.11.7
+torch==2.8.0
+torchvision==0.23.0
+numpy==2.4.2
+scipy==1.16.2
+nibabel==5.4.2
+opencv-python==4.13.0
+pillow==11.3.0
+pandas==2.3.1
+matplotlib==3.10.6
+requests==2.34.2
