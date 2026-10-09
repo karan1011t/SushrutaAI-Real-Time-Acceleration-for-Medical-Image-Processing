@@ -38,6 +38,7 @@ if project_root not in sys.path:
 
 from src.models.unet import UNet2D, count_parameters
 from src.models.multimodal_dataset import MultiModalBraTS2DDataset, MULTIMODAL_CHANNEL_ORDER
+from src.models.multimodal_dataset_cached import CachedMultiModalBraTS2DDataset
 from src.evaluation.segmentation_metrics import compute_binary_metrics_single_image
 
 
@@ -183,11 +184,19 @@ def run_multimodal_unet_training(
     learning_rate: float = 1e-3,
     seed: int = 42,
     num_workers: int = 0,
-    device_name: Optional[str] = None
+    device_name: Optional[str] = None,
+    use_cached_loader: bool = True,
+    max_cached_patients: int = 4
 ) -> Dict[str, Any]:
     """
     Executes reproducible training and evaluation for the 4-channel Multi-Modal U-Net baseline.
     Saves best model checkpoint to results/models/multimodal_unet_best.pt.
+
+    The cached loader (CachedMultiModalBraTS2DDataset, an LRU subclass of
+    MultiModalBraTS2DDataset) preserves channel order, normalization, mask
+    semantics, slice indexing, and patient-level splits; it only avoids
+    re-decompressing each patient's .nii.gz volumes on every slice access.
+    Set use_cached_loader=False to reproduce the original uncached behavior.
     """
     set_seed(seed)
 
@@ -218,10 +227,15 @@ def run_multimodal_unet_training(
     figures_path = results_figures_dir / "multimodal_unet_curves.png"
     test_report_path = results_metrics_dir / "multimodal_unet_test_metrics.json"
 
-    # Datasets and Loaders
-    train_dataset = MultiModalBraTS2DDataset(data_dir=data_dir, manifest_path=manifest_path, split="train", augment=True, seed=seed)
-    val_dataset = MultiModalBraTS2DDataset(data_dir=data_dir, manifest_path=manifest_path, split="val", augment=False, seed=seed)
-    test_dataset = MultiModalBraTS2DDataset(data_dir=data_dir, manifest_path=manifest_path, split="test", augment=False, seed=seed)
+    # Datasets and Loaders (cached subclass preserves splits, order, normalization, masks)
+    DatasetCls = CachedMultiModalBraTS2DDataset if use_cached_loader else MultiModalBraTS2DDataset
+    dataset_kwargs: Dict[str, Any] = {"seed": seed}
+    if use_cached_loader:
+        dataset_kwargs["max_cached_patients"] = max_cached_patients
+    train_dataset = DatasetCls(data_dir=data_dir, manifest_path=manifest_path, split="train", augment=True, **dataset_kwargs)
+    val_dataset = DatasetCls(data_dir=data_dir, manifest_path=manifest_path, split="val", augment=False, **dataset_kwargs)
+    test_dataset = DatasetCls(data_dir=data_dir, manifest_path=manifest_path, split="test", augment=False, **dataset_kwargs)
+    print(f"Data Loader:         {'CachedMultiModalBraTS2DDataset (LRU, max_cached_patients=' + str(max_cached_patients) + ') parity-verified vs uncached' if use_cached_loader else 'MultiModalBraTS2DDataset (uncached)'}" )
 
     print(f"\n--- DATASET ELIGIBILITY & SPLIT SUMMARY ---")
     print(f"Train Split: {len(train_dataset.valid_cases)} valid patients ({len(train_dataset.excluded_cases)} excluded), {len(train_dataset):,} slices")
@@ -317,6 +331,9 @@ def run_multimodal_unet_training(
         "test_precision": round(test_metrics["precision"], 4),
         "test_recall": round(test_metrics["recall"], 4),
         "decision_threshold": 0.5,
+        "data_loader": "CachedMultiModalBraTS2DDataset" if use_cached_loader else "MultiModalBraTS2DDataset",
+        "max_cached_patients": max_cached_patients if use_cached_loader else 0,
+        "trainable_parameters": count_parameters(model),
         "disclaimer": "Research-prototype comparative benchmark result. Performance on external hospital scans is not clinically validated."
     }
 
