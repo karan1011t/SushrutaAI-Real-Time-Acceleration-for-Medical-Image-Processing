@@ -38,7 +38,11 @@ class ClassifierLayerCAMGenerator:
         if grad_output and grad_output[0] is not None:
             self.gradients = grad_output[0].detach()
 
-    def generate_cam(self, input_tensor: torch.Tensor) -> Tuple[np.ndarray, float, float, Dict[str, Any]]:
+    def generate_cam(
+        self,
+        input_tensor: torch.Tensor,
+        decision_threshold: float = 0.5
+    ) -> Tuple[np.ndarray, float, float, Dict[str, Any]]:
         """
         Generates Classifier LayerCAM heatmap for an input MRI tensor.
 
@@ -67,7 +71,7 @@ class ClassifierLayerCAMGenerator:
             if self.activations is None or self.gradients is None:
                 # Fallback to zero map if hooks fail
                 cam_norm = np.zeros((input_tensor.shape[2], input_tensor.shape[3]), dtype=np.float32)
-                loc_info = self._derive_location(cam_norm)
+                loc_info = self._derive_location(cam_norm, is_detected=False)
                 return cam_norm, prob, logit_val, loc_info
 
             act = self.activations[0]  # (256, H, W)
@@ -83,12 +87,24 @@ class ClassifierLayerCAMGenerator:
             cam_resized = cv2.resize(cam_np, (W_in, H_in), interpolation=cv2.INTER_LINEAR)
 
             c_min, c_max = float(cam_resized.min()), float(cam_resized.max())
-            if c_max > c_min:
-                cam_norm = (cam_resized - c_min) / (c_max - c_min)
-            else:
-                cam_norm = np.zeros_like(cam_resized, dtype=np.float32)
+            is_detected = bool(prob >= decision_threshold)
 
-            location_info = self._derive_location(cam_norm)
+            if is_detected:
+                # Positive classification: min-max normalize to [0.0, 1.0] to highlight focal region
+                if c_max > c_min:
+                    cam_norm = (cam_resized - c_min) / (c_max - c_min)
+                else:
+                    cam_norm = np.zeros_like(cam_resized, dtype=np.float32)
+            else:
+                # Sub-threshold classification:
+                # If prob < 1e-4 or flat, suppress completely to prevent fake noise lesions
+                # Otherwise, confidence-scale by (prob / decision_threshold)
+                if c_max > c_min and prob >= 1e-4:
+                    cam_norm = ((cam_resized - c_min) / (c_max - c_min)) * (prob / decision_threshold)
+                else:
+                    cam_norm = np.zeros_like(cam_resized, dtype=np.float32)
+
+            location_info = self._derive_location(cam_norm, is_detected=is_detected)
 
             return cam_norm, prob, logit_val, location_info
         finally:
@@ -97,20 +113,28 @@ class ClassifierLayerCAMGenerator:
             self.activations = None
             self.gradients = None
 
-    def _derive_location(self, cam_norm: np.ndarray) -> Dict[str, Any]:
+    def _derive_location(self, cam_norm: np.ndarray, is_detected: bool = True) -> Dict[str, Any]:
         """
         Derives image-relative spatial location (e.g. center-right, upper-left) from LayerCAM.
+        For sub-threshold / non-detected slices or zero-activation maps, returns clean non-focal metadata.
         """
+        if not is_detected or float(cam_norm.max()) <= 1e-4:
+            return {
+                'location': 'none',
+                'centroid': {'x': 0.0, 'y': 0.0},
+                'bounding_box': {'x': 0, 'y': 0, 'width': 0, 'height': 0}
+            }
+
         H, W = cam_norm.shape
         max_val = float(cam_norm.max())
-        thresh_val = 0.5 * max_val if max_val > 0 else 0.5
+        thresh_val = 0.5 * max_val
         high_act = (cam_norm >= thresh_val).astype(np.uint8)
 
         if np.sum(high_act) == 0:
             return {
-                'location': 'center',
-                'centroid': {'x': round(W / 2.0, 2), 'y': round(H / 2.0, 2)},
-                'bounding_box': {'x': 0, 'y': 0, 'width': W, 'height': H}
+                'location': 'none',
+                'centroid': {'x': 0.0, 'y': 0.0},
+                'bounding_box': {'x': 0, 'y': 0, 'width': 0, 'height': 0}
             }
 
         y_indices, x_indices = np.where(high_act > 0)
@@ -170,12 +194,14 @@ def generate_dynamic_explanation(
     thresh_percent = round(decision_threshold * 100.0, 1)
 
     if tumor_detected:
+        loc_desc = f"in the {location_str} portion of the MRI slice" if location_str and location_str != "none" else "across the slice"
         return (
-            f"Tumor detected with {prob_percent}% model probability (above the {thresh_percent}% decision threshold). "
-            f"The classification decision was primarily influenced by the highlighted region in the {location_str} portion of the MRI slice."
+            f"Tumor indicated by auxiliary screening model with {prob_percent}% probability (above the {thresh_percent}% decision threshold). "
+            f"The classification decision was primarily influenced by the highlighted region {loc_desc}."
         )
     else:
         return (
-            f"No tumor detected. The model assigned a {prob_percent}% tumor probability, which is below the {thresh_percent}% decision threshold. "
-            f"The explanation map highlights regions contributing to the non-tumor classification decision."
+            f"No tumor indicated by auxiliary screening model. The assigned tumor probability is {prob_percent}%, "
+            f"which is below the {thresh_percent}% decision threshold. "
+            f"No focal tumor attribution is confirmed; any visual heatmap represents sub-threshold feature traces."
         )

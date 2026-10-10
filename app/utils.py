@@ -136,8 +136,9 @@ def generate_visualization_artifacts(
         layercam_path = os.path.join(output_dir, layercam_filename)
         Image.fromarray(cam_rgb).save(layercam_path)
 
-        # 6. MRI + LayerCAM Overlay (60% LayerCAM + 40% MRI base)
-        cam_overlay_rgb = (0.60 * cam_rgb.astype(np.float32) + 0.40 * mri_rgb)
+        # 6. MRI + LayerCAM Overlay (spatial alpha blend)
+        alpha = np.clip(layercam_map[:, :, np.newaxis] * 0.60, 0.0, 0.60).astype(np.float32)
+        cam_overlay_rgb = alpha * cam_rgb.astype(np.float32) + (1.0 - alpha) * mri_rgb
         cam_overlay_uint8 = np.clip(cam_overlay_rgb, 0, 255).astype(np.uint8)
 
         layercam_overlay_filename = f"{base_id}_layercam_overlay.png"
@@ -187,8 +188,11 @@ def generate_classifier_artifact(
     cam_colored = cv2.applyColorMap(cam_uint8, cv2.COLORMAP_JET)
     cam_rgb = cv2.cvtColor(cam_colored, cv2.COLOR_BGR2RGB)
 
-    # 60% LayerCAM + 40% MRI
-    cam_overlay_rgb = (0.60 * cam_rgb.astype(np.float32) + 0.40 * mri_rgb)
+    # Use spatial alpha blending proportional to attribution intensity
+    # Where cam is zero or near-zero, alpha is 0 (clean grayscale MRI, no artificial blue tint)
+    # Where cam is 1.0, alpha is 0.60 (60% JET colormap + 40% MRI base)
+    alpha = np.clip(classifier_cam_map[:, :, np.newaxis] * 0.60, 0.0, 0.60).astype(np.float32)
+    cam_overlay_rgb = alpha * cam_rgb.astype(np.float32) + (1.0 - alpha) * mri_rgb
     cam_overlay_uint8 = np.clip(cam_overlay_rgb, 0, 255).astype(np.uint8)
 
     filename = f"{base_id}_classifier_layercam.png"

@@ -9,7 +9,7 @@ import ExplainabilityPanel from './components/ExplainabilityPanel';
 import PerformancePanel from './components/PerformancePanel';
 import ClinicalDisclaimer from './components/ClinicalDisclaimer';
 import SignalAnalysisTab from './components/SignalAnalysisTab';
-import { RefreshCw, AlertCircle, Radio, BrainCircuit, ShieldAlert } from 'lucide-react';
+import { RefreshCw, AlertCircle, Radio, BrainCircuit, Activity, CheckCircle2, AlertTriangle } from 'lucide-react';
 
 export default function App() {
   const [loading, setLoading] = useState(false);
@@ -90,7 +90,31 @@ export default function App() {
     setModalImage(null);
   };
 
-  const isTumorDetected = predictionData?.classification?.tumor_detected ?? predictionData?.tumor_detected ?? false;
+  // Quantitative metrics & model agreement calculations
+  const segAreaPixels = predictionData?.measurements?.area_pixels ?? 0;
+  const segAreaPct = predictionData?.measurements?.area_percentage ?? 0.0;
+  const segHasTumor = segAreaPixels > 0;
+  const segOutcomeText = segHasTumor
+    ? 'Whole-tumor pixels segmented'
+    : 'No whole-tumor pixels segmented';
+
+  const clsTumorDetected = predictionData?.classification?.tumor_detected ?? false;
+  const clsProb = predictionData?.classification?.tumor_probability ?? 0.0;
+  const clsThreshold = predictionData?.classification?.decision_threshold ?? 0.50;
+
+  // Model agreement: comparison between auxiliary classifier and U-Net mask
+  const isModelAgreement = (clsTumorDetected === segHasTumor);
+  const agreementLabel = isModelAgreement ? 'Models Concordant' : 'Model Discrepancy';
+  const agreementDetail = isModelAgreement
+    ? (clsTumorDetected
+        ? 'Both models indicate tumor presence (Screening P ≥ 50% and U-Net segmented whole-tumor pixels)'
+        : 'Neither model indicates tumor presence (Screening P < 50% and U-Net segmented 0 pixels above threshold τ = 0.50)')
+    : (clsTumorDetected
+        ? 'Model Discrepancy: Auxiliary 2D CNN classifier indicated tumor (P ≥ 50%), but U-Net segmented 0 pixels above threshold τ = 0.50'
+        : 'Model Discrepancy: Auxiliary 2D CNN classifier was below threshold (P < 50%), but U-Net segmented whole-tumor pixels above threshold τ = 0.50');
+
+  const unetLatency = predictionData?.inference?.segmentation_inference_time_ms ?? predictionData?.inference?.time_ms;
+  const totalLatency = predictionData?.inference?.total_request_time_ms;
 
   return (
     <div className="app-container">
@@ -183,180 +207,343 @@ export default function App() {
         {/* TAB 1: SEGMENTATION & XAI */}
         {mainTab === 'segmentation' && predictionData && (
           <div>
-            {/* STAGE 1: CLASSIFICATION & DECISION EXPLANATION */}
+            {/* PREDICTION SUMMARY & MODEL AGREEMENT (SECTION C) */}
+            <div className="card" style={{
+              marginBottom: '1.25rem',
+              padding: '1.25rem',
+              background: 'rgba(18, 24, 39, 0.85)',
+              border: '1px solid var(--border-color)',
+              boxShadow: 'var(--shadow-md)'
+            }}>
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: '0.75rem',
+                marginBottom: '1rem',
+                borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
+                paddingBottom: '0.75rem'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                  <Activity size={20} color="var(--accent-cyan)" />
+                  <span style={{ fontWeight: 700, fontSize: '1.05rem', color: 'var(--text-primary)' }}>
+                    Inference Analysis Summary & Model Agreement
+                  </span>
+                </div>
+
+                {/* Agreement Badge with explicit non-consensus disclaimer */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
+                  <div style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '0.4rem',
+                    padding: '4px 10px',
+                    borderRadius: 'var(--radius-sm)',
+                    fontSize: '0.8rem',
+                    fontWeight: 600,
+                    background: isModelAgreement ? 'rgba(16, 185, 129, 0.15)' : 'rgba(245, 158, 11, 0.15)',
+                    color: isModelAgreement ? 'var(--accent-emerald)' : 'var(--accent-amber)',
+                    border: isModelAgreement ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(245, 158, 11, 0.3)'
+                  }}>
+                    {isModelAgreement ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
+                    <span>{agreementLabel}</span>
+                  </div>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                    (Model-output agreement only, not diagnostic consensus)
+                  </span>
+                </div>
+              </div>
+
+              {/* 4-Stat Metric Summary Grid */}
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                gap: '1rem',
+                marginBottom: '1rem'
+              }}>
+                {/* Stat 1: U-Net Segmentation Outcome */}
+                <div style={{
+                  padding: '0.85rem 1rem',
+                  borderRadius: 'var(--radius-sm)',
+                  background: 'rgba(9, 13, 22, 0.6)',
+                  border: '1px solid var(--border-color)'
+                }}>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', textTransform: 'uppercase', fontWeight: 600, marginBottom: '0.25rem' }}>
+                    U-Net Segmentation Outcome
+                  </div>
+                  <div style={{ fontSize: '0.95rem', fontWeight: 700, color: segHasTumor ? 'var(--accent-amber)' : 'var(--accent-emerald)' }}>
+                    {segOutcomeText}
+                  </div>
+                  <div style={{ fontFamily: 'JetBrains Mono', fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.2rem' }}>
+                    {segAreaPixels.toLocaleString()} px ({Number(segAreaPct).toFixed(2)}% of 256×256)
+                  </div>
+                </div>
+
+                {/* Stat 2: Auxiliary Screening Classifier */}
+                <div style={{
+                  padding: '0.85rem 1rem',
+                  borderRadius: 'var(--radius-sm)',
+                  background: 'rgba(9, 13, 22, 0.6)',
+                  border: '1px solid var(--border-color)'
+                }}>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', textTransform: 'uppercase', fontWeight: 600, marginBottom: '0.25rem' }}>
+                    Auxiliary Screening Classifier (2D CNN)
+                  </div>
+                  <div style={{ fontSize: '0.95rem', fontWeight: 700, color: clsTumorDetected ? 'var(--accent-amber)' : 'var(--accent-emerald)' }}>
+                    {clsTumorDetected ? 'Tumor Indicated' : 'No Tumor Indicated'}
+                  </div>
+                  <div style={{ fontFamily: 'JetBrains Mono', fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.2rem' }}>
+                    P = {(clsProb * 100).toFixed(1)}% (Threshold: {(clsThreshold * 100).toFixed(0)}%)
+                  </div>
+                </div>
+
+                {/* Stat 3: Model Output Agreement */}
+                <div style={{
+                  padding: '0.85rem 1rem',
+                  borderRadius: 'var(--radius-sm)',
+                  background: 'rgba(9, 13, 22, 0.6)',
+                  border: '1px solid var(--border-color)'
+                }}>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', textTransform: 'uppercase', fontWeight: 600, marginBottom: '0.25rem' }}>
+                    Model Agreement Details
+                  </div>
+                  <div style={{ fontSize: '0.825rem', fontWeight: 500, color: 'var(--text-primary)', lineHeight: 1.35 }}>
+                    {agreementDetail}
+                  </div>
+                </div>
+
+                {/* Stat 4: Processing Latency */}
+                <div style={{
+                  padding: '0.85rem 1rem',
+                  borderRadius: 'var(--radius-sm)',
+                  background: 'rgba(9, 13, 22, 0.6)',
+                  border: '1px solid var(--border-color)'
+                }}>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', textTransform: 'uppercase', fontWeight: 600, marginBottom: '0.25rem' }}>
+                    Processing Latencies
+                  </div>
+                  <div style={{ fontFamily: 'JetBrains Mono', fontSize: '0.85rem', color: 'var(--accent-cyan)' }}>
+                    U-Net: <strong>{unetLatency ? unetLatency.toFixed(1) + ' ms' : 'N/A'}</strong>
+                  </div>
+                  <div style={{ fontFamily: 'JetBrains Mono', fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.2rem' }}>
+                    Total Request: <strong>{totalLatency ? totalLatency.toFixed(1) + ' ms' : 'N/A'}</strong>
+                  </div>
+                </div>
+              </div>
+
+              {/* Slice Context Explanatory Note */}
+              <div style={{
+                fontSize: '0.75rem',
+                color: 'var(--text-muted)',
+                lineHeight: 1.45,
+                borderTop: '1px solid rgba(255, 255, 255, 0.05)',
+                paddingTop: '0.5rem',
+                fontStyle: 'italic'
+              }}>
+                * Model Output Interpretation: This analysis represents the algorithmic model output for this specific 2D slice. An empty segmentation mask reflects zero pixels exceeding the threshold (τ = 0.50) on this slice, not clinical confirmation of tumor absence.
+              </div>
+            </div>
+
+            {/* COMPACT AUXILIARY CLASSIFICATION SECTION */}
             <ClassificationPanel
               classification={predictionData.classification}
               classifierLayercamUrl={predictionData.outputs?.classifier_layercam}
               onOpenModal={(imgInfo) => setModalImage(imgInfo)}
             />
 
-            {/* STAGE 2: U-NET SEGMENTATION (ONLY WHEN TUMOR IS DETECTED) */}
-            {isTumorDetected ? (
-              <>
-                {/* Overlay View Switcher */}
-                <div style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  marginBottom: '1.25rem'
-                }}>
-                  <div>
-                    <h2 style={{ fontSize: '1.25rem', fontWeight: 700, color: 'var(--text-primary)' }}>
-                      Stage 2: U-Net Tumor Segmentation & Detailed XAI
-                    </h2>
-                    <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                      Pixel-wise tumor delineation (U-Net) and decoder feature attributions
-                    </p>
-                  </div>
+            {/* UNIFIED RESULTS WORKSPACE (UNCONDITIONALLY DISPLAYED) */}
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: '1rem',
+              flexWrap: 'wrap',
+              gap: '0.75rem'
+            }}>
+              <div>
+                <h2 style={{ fontSize: '1.2rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                  MRI Segmentation & Visual Interpretability
+                </h2>
+                <p style={{ fontSize: '0.825rem', color: 'var(--text-secondary)' }}>
+                  Unified multi-view workspace displaying slice input, whole-tumor delineation, and feature attributions
+                </p>
+              </div>
 
-                  <div style={{ background: 'var(--bg-card)', padding: '4px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-color)', display: 'flex', gap: '4px' }}>
-                    <button
-                      className="btn-secondary"
-                      style={{
-                        background: overlayTab === 'primary' ? 'var(--accent-cyan)' : 'transparent',
-                        color: overlayTab === 'primary' ? '#090d16' : 'var(--text-secondary)',
-                        border: 'none',
-                        fontWeight: 600,
-                        fontSize: '0.8rem'
-                      }}
-                      onClick={() => setOverlayTab('primary')}
-                    >
-                      Primary Overlays
-                    </button>
-                    <button
-                      className="btn-secondary"
-                      style={{
-                        background: overlayTab === 'secondary' ? 'var(--accent-cyan)' : 'transparent',
-                        color: overlayTab === 'secondary' ? '#090d16' : 'var(--text-secondary)',
-                        border: 'none',
-                        fontWeight: 600,
-                        fontSize: '0.8rem'
-                      }}
-                      onClick={() => setOverlayTab('secondary')}
-                    >
-                      Standalone Maps
-                    </button>
-                  </div>
-                </div>
-
-                {/* RESULTS VISUAL CARDS */}
-                {overlayTab === 'primary' ? (
-                  <div className="results-grid-4">
-                    <VisualCard
-                      title="Original Preprocessed MRI"
-                      subtitle="2D FLAIR slice normalized to [0.0, 1.0]"
-                      imageUrl={predictionData.outputs?.preprocessed_mri}
-                      onClick={() => setModalImage({
-                        title: 'Original Preprocessed MRI',
-                        subtitle: '2D Brain MRI FLAIR slice after canonical float scaling [0, 1] and 256x256 resizing.',
-                        url: predictionData.outputs?.preprocessed_mri
-                      })}
-                    />
-
-                    <VisualCard
-                      title="Tumor Segmentation"
-                      subtitle="Binary mask overlay on MRI (Yellow Box)"
-                      imageUrl={predictionData.outputs?.overlay}
-                      onClick={() => setModalImage({
-                        title: 'Tumor Segmentation Overlay',
-                        subtitle: 'Predicted tumor region (green semi-transparent mask) with overall bounding box outline.',
-                        url: predictionData.outputs?.overlay
-                      })}
-                    />
-
-                    <VisualCard
-                      title="Segmentation LayerCAM"
-                      subtitle="MRI + U-Net feature attribution overlay"
-                      imageUrl={predictionData.outputs?.layercam_overlay}
-                      onClick={() => setModalImage({
-                        title: 'U-Net LayerCAM Feature Attribution Overlay',
-                        subtitle: 'LayerCAM activation heatmap (Jiang et al., 2021) backpropagated from decoder layer up4.',
-                        url: predictionData.outputs?.layercam_overlay
-                      })}
-                    />
-
-                    <VisualCard
-                      title="Combined Analysis"
-                      subtitle="LayerCAM + Cyan Tumor Contour boundary"
-                      imageUrl={predictionData.outputs?.combined_overlay}
-                      onClick={() => setModalImage({
-                        title: 'Combined Diagnostic Analysis',
-                        subtitle: 'Simultaneous overlay comparing tumor segmentation boundary (cyan contour) against LayerCAM attribution gradients.',
-                        url: predictionData.outputs?.combined_overlay
-                      })}
-                    />
-                  </div>
-                ) : (
-                  <div className="results-grid-4">
-                    <VisualCard
-                      title="Binary Tumor Mask"
-                      subtitle="Thresholded decision mask {0, 1}"
-                      imageUrl={predictionData.outputs?.tumor_mask}
-                      onClick={() => setModalImage({
-                        title: 'Binary Tumor Mask',
-                        subtitle: '256x256 binary mask where background = 0 (black) and tumor = 1 (white).',
-                        url: predictionData.outputs?.tumor_mask
-                      })}
-                    />
-
-                    <VisualCard
-                      title="Probability Heatmap"
-                      subtitle="Continuous U-Net sigmoid output P ∈ [0, 1]"
-                      imageUrl={predictionData.outputs?.probability_map}
-                      onClick={() => setModalImage({
-                        title: 'Continuous Probability Heatmap',
-                        subtitle: 'U-Net sigmoid probability map rendered with JET colormap.',
-                        url: predictionData.outputs?.probability_map
-                      })}
-                    />
-
-                    <VisualCard
-                      title="LayerCAM Heatmap"
-                      subtitle="Standalone attribution activation map"
-                      imageUrl={predictionData.outputs?.layercam}
-                      onClick={() => setModalImage({
-                        title: 'Standalone LayerCAM Heatmap',
-                        subtitle: 'Normalized LayerCAM attribution map L ∈ [0, 1].',
-                        url: predictionData.outputs?.layercam
-                      })}
-                    />
-                  </div>
-                )}
-
-                {/* QUANTITATIVE MORPHOMETRICS */}
-                <MorphometricsPanel
-                  measurements={predictionData.measurements}
-                  confidence={predictionData.segmentation_confidence}
-                  tumorDetected={predictionData.tumor_detected}
-                />
-
-                {/* EXPLAINABILITY DETAILS */}
-                <ExplainabilityPanel
-                  explainability={predictionData.explainability}
-                />
-              </>
-            ) : (
               <div style={{
-                background: 'rgba(15, 23, 42, 0.5)',
-                border: '1px solid rgba(16, 185, 129, 0.3)',
-                borderRadius: 'var(--radius-md)',
-                padding: '1.5rem',
-                marginBottom: '1.5rem',
+                background: 'var(--bg-card)',
+                padding: '4px',
+                borderRadius: 'var(--radius-sm)',
+                border: '1px solid var(--border-color)',
                 display: 'flex',
-                alignItems: 'center',
-                gap: '1rem'
+                gap: '4px'
               }}>
-                <ShieldAlert size={28} color="var(--accent-emerald)" style={{ flexShrink: 0 }} />
-                <div>
-                  <div style={{ fontWeight: 700, fontSize: '1rem', color: 'var(--accent-emerald)', marginBottom: '0.25rem' }}>
-                    Stage 2 U-Net Tumor Segmentation Skipped
-                  </div>
-                  <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', lineHeight: '1.5' }}>
-                    No tumor region was identified above the classifier's decision threshold ({(predictionData?.classification?.decision_threshold * 100).toFixed(0)}%). Pixel-wise U-Net segmentation and tumor morphometrics were omitted to prevent false positive tumor reporting.
-                  </div>
-                </div>
+                <button
+                  className="btn-secondary"
+                  style={{
+                    background: overlayTab === 'primary' ? 'var(--accent-cyan)' : 'transparent',
+                    color: overlayTab === 'primary' ? '#090d16' : 'var(--text-secondary)',
+                    border: 'none',
+                    fontWeight: 600,
+                    fontSize: '0.8rem'
+                  }}
+                  onClick={() => setOverlayTab('primary')}
+                >
+                  Primary Viewport (Core 4 Views)
+                </button>
+                <button
+                  className="btn-secondary"
+                  style={{
+                    background: overlayTab === 'secondary' ? 'var(--accent-cyan)' : 'transparent',
+                    color: overlayTab === 'secondary' ? '#090d16' : 'var(--text-secondary)',
+                    border: 'none',
+                    fontWeight: 600,
+                    fontSize: '0.8rem'
+                  }}
+                  onClick={() => setOverlayTab('secondary')}
+                >
+                  Diagnostic Heatmaps & Secondary Views
+                </button>
+              </div>
+            </div>
+
+            {/* PRIMARY VIEWPORT VS SECONDARY VIEWS */}
+            {overlayTab === 'primary' ? (
+              <div className="results-grid-4">
+                {/* View 1: Preprocessed MRI */}
+                <VisualCard
+                  title="1. Preprocessed MRI Slice"
+                  subtitle="Canonical float scaling [0, 1] & 256×256 matrix"
+                  imageUrl={predictionData.outputs?.preprocessed_mri}
+                  onClick={() => setModalImage({
+                    title: 'Original Preprocessed MRI',
+                    subtitle: '2D Brain MRI slice after canonical float scaling [0.0, 1.0] and 256×256 resizing.',
+                    url: predictionData.outputs?.preprocessed_mri
+                  })}
+                />
+
+                {/* View 2: Binary Whole-Tumor Segmentation Mask */}
+                <VisualCard
+                  title="2. Binary Whole-Tumor Mask"
+                  subtitle={segHasTumor ? `${segAreaPixels.toLocaleString()} px segmented (τ = 0.50)` : "0 pixels segmented (all-background mask)"}
+                  imageUrl={predictionData.outputs?.tumor_mask}
+                  onClick={() => setModalImage({
+                    title: 'Binary Whole-Tumor Segmentation Mask',
+                    subtitle: '256×256 binary mask where background = 0 (black) and predicted whole-tumor = 1 (white).',
+                    url: predictionData.outputs?.tumor_mask
+                  })}
+                />
+
+                {/* View 3: MRI + Segmentation Overlay */}
+                <VisualCard
+                  title="3. MRI + Tumor Overlay"
+                  subtitle={segHasTumor ? "Predicted whole-tumor region (green) with bounding box" : "MRI slice with no tumor overlay (0 px segmented)"}
+                  imageUrl={predictionData.outputs?.overlay}
+                  onClick={() => setModalImage({
+                    title: 'MRI + Tumor Segmentation Overlay',
+                    subtitle: segHasTumor
+                      ? 'Predicted whole-tumor region (green semi-transparent mask) with overall bounding box outline.'
+                      : 'Preprocessed MRI slice without tumor overlay because 0 tumor pixels were segmented.',
+                    url: predictionData.outputs?.overlay
+                  })}
+                />
+
+                {/* View 4: U-Net LayerCAM Attribution */}
+                <VisualCard
+                  title="4. U-Net LayerCAM Attribution"
+                  subtitle={predictionData.outputs?.layercam_overlay ? "MRI + decoder layer up4 feature attribution" : "Unavailable (0 tumor pixels segmented)"}
+                  imageUrl={predictionData.outputs?.layercam_overlay}
+                  badge="LayerCAM Attribution Unavailable"
+                  unavailableMessage={
+                    predictionData.explainability?.interpretation ||
+                    "Tumor-targeted LayerCAM attribution requires predicted tumor pixels to backpropagate gradients. Because 0 tumor pixels were segmented above threshold τ = 0.50, attribution is unavailable for this slice."
+                  }
+                  onClick={() => setModalImage({
+                    title: 'U-Net LayerCAM Feature Attribution Overlay',
+                    subtitle: 'LayerCAM activation heatmap (Jiang et al., 2021) backpropagated from decoder layer up4.',
+                    url: predictionData.outputs?.layercam_overlay
+                  })}
+                />
+              </div>
+            ) : (
+              <div className="results-grid-4">
+                {/* Secondary 1: Probability Heatmap */}
+                <VisualCard
+                  title="Continuous Probability Heatmap"
+                  subtitle={
+                    segHasTumor
+                      ? "Sigmoid probability map P ∈ [0.0, 1.0] (JET)"
+                      : "Continuous probability map (All pixels below τ = 0.50 decision threshold)"
+                  }
+                  imageUrl={predictionData.outputs?.probability_map}
+                  onClick={() => setModalImage({
+                    title: 'Continuous Probability Heatmap',
+                    subtitle: segHasTumor
+                      ? 'Continuous pixel-wise sigmoid probability map rendered with JET colormap.'
+                      : 'Continuous pixel-wise sigmoid probability map. Note: All pixels are below the decision threshold (τ = 0.50); no whole-tumor region is segmented.',
+                    url: predictionData.outputs?.probability_map
+                  })}
+                />
+
+                {/* Secondary 2: Combined Contour / Overlay */}
+                <VisualCard
+                  title="Combined Overlay & Contour"
+                  subtitle={predictionData.outputs?.combined_overlay ? "LayerCAM + Cyan Tumor Contour boundary" : "Unavailable (No tumor contour/attribution)"}
+                  imageUrl={predictionData.outputs?.combined_overlay}
+                  badge="Combined Contour Unavailable"
+                  unavailableMessage="Combined overlay requires both tumor contour and LayerCAM attribution gradients, which are absent for an empty mask."
+                  onClick={() => setModalImage({
+                    title: 'Combined Diagnostic Analysis',
+                    subtitle: 'Simultaneous overlay comparing tumor segmentation boundary (cyan contour) against LayerCAM attribution gradients.',
+                    url: predictionData.outputs?.combined_overlay
+                  })}
+                />
+
+                {/* Secondary 3: Classifier LayerCAM Overlay */}
+                <VisualCard
+                  title="Classifier LayerCAM Overlay"
+                  subtitle={
+                    clsTumorDetected
+                      ? `Auxiliary 2D CNN screening focus region (${predictionData.classification?.xai?.strongest_region_location && predictionData.classification?.xai?.strongest_region_location !== 'none' ? predictionData.classification?.xai?.strongest_region_location : 'focal'})`
+                      : `Auxiliary 2D CNN sub-threshold feature trace (P = ${(clsProb * 100).toFixed(1)}% < 50%)`
+                  }
+                  imageUrl={predictionData.outputs?.classifier_layercam}
+                  onClick={() => setModalImage({
+                    title: clsTumorDetected ? 'Classifier LayerCAM Heatmap Overlay' : 'Sub-Threshold Classifier Attribution Overlay',
+                    subtitle: clsTumorDetected
+                      ? 'Feature attribution for auxiliary 2D CNN classifier indicating image regions driving positive screening.'
+                      : 'Sub-threshold feature attribution map for auxiliary 2D CNN classifier. No focal lesion confirmed above decision threshold.',
+                    url: predictionData.outputs?.classifier_layercam
+                  })}
+                />
+
+                {/* Secondary 4: Standalone LayerCAM Heatmap */}
+                <VisualCard
+                  title="Standalone LayerCAM Heatmap"
+                  subtitle={predictionData.outputs?.layercam ? "Normalized attribution heatmap L ∈ [0.0, 1.0]" : "Unavailable (0 tumor pixels segmented)"}
+                  imageUrl={predictionData.outputs?.layercam}
+                  badge="LayerCAM Heatmap Unavailable"
+                  unavailableMessage="Standalone LayerCAM heatmap is unavailable because 0 tumor pixels were segmented."
+                  onClick={() => setModalImage({
+                    title: 'Standalone LayerCAM Heatmap',
+                    subtitle: 'Normalized LayerCAM attribution map L ∈ [0.0, 1.0].',
+                    url: predictionData.outputs?.layercam
+                  })}
+                />
               </div>
             )}
+
+            {/* QUANTITATIVE MORPHOMETRICS (SECTION D) */}
+            <MorphometricsPanel
+              measurements={predictionData.measurements}
+              confidence={predictionData.segmentation_confidence}
+              tumorDetected={segHasTumor}
+            />
+
+            {/* EXPLAINABILITY DETAILS */}
+            <ExplainabilityPanel
+              explainability={predictionData.explainability}
+            />
 
             {/* PERFORMANCE BENCHMARKS */}
             <PerformancePanel

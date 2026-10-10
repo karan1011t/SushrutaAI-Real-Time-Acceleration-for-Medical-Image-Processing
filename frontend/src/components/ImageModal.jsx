@@ -2,9 +2,8 @@ import React, { useEffect } from 'react';
 import { X, Download } from 'lucide-react';
 
 export default function ImageModal({ title, subtitle, imageUrl, onClose }) {
-  if (!imageUrl) return null;
-
   useEffect(() => {
+    if (!imageUrl) return;
     const handleKeyDown = (e) => {
       if (e.key === 'Escape') {
         onClose();
@@ -16,7 +15,9 @@ export default function ImageModal({ title, subtitle, imageUrl, onClose }) {
       document.body.style.overflow = 'unset';
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [onClose]);
+  }, [imageUrl, onClose]);
+
+  if (!imageUrl) return null;
 
   const handleDownload = () => {
     const a = document.createElement('a');

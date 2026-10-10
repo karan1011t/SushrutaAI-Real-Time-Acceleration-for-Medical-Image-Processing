@@ -183,8 +183,8 @@ async def health_check():
 async def predict_segmentation(request: Request, file: UploadFile = File(...)):
     """
     Runs Two-Stage 2D Brain MRI Analysis:
-    Stage 1: Image-level BinaryTumorClassifier prediction + Classifier LayerCAM XAI explanation.
-    Stage 2: Conditional U-Net segmentation & morphometric measurement calculations (executed only if tumor detected).
+    Stage 1: Image-level BinaryTumorClassifier auxiliary screening prediction + Classifier LayerCAM XAI explanation.
+    Stage 2: U-Net whole-tumor segmentation & morphometric measurement calculations (unconditionally executed for all valid MRI slices).
     """
     t_total_start = time.perf_counter()
 
@@ -257,10 +257,13 @@ async def predict_segmentation(request: Request, file: UploadFile = File(...)):
     # 3. STAGE 1: IMAGE-LEVEL BINARY CLASSIFICATION & CLASSIFIER LAYERCAM XAI
     decision_threshold = 0.5
     try:
-        classifier_cam_norm, tumor_prob, tumor_logit, location_info = classifier_cam_gen.generate_cam(input_tensor)
-        tumor_detected = bool(tumor_prob >= decision_threshold)
+        classifier_cam_norm, tumor_prob, tumor_logit, location_info = classifier_cam_gen.generate_cam(
+            input_tensor,
+            decision_threshold=decision_threshold
+        )
+        classifier_tumor_detected = bool(tumor_prob >= decision_threshold)
         explanation_text = generate_dynamic_explanation(
-            tumor_detected=tumor_detected,
+            tumor_detected=classifier_tumor_detected,
             tumor_probability=tumor_prob,
             decision_threshold=decision_threshold,
             location_str=location_info["location"]
@@ -287,28 +290,29 @@ async def predict_segmentation(request: Request, file: UploadFile = File(...)):
             }
         )
 
-    # 4. STAGE 2: CONDITIONAL U-NET SEGMENTATION & MORPHOMETRICS
-    segmentation_performed = False
-    confidence = 0.0
-    inf_time_ms = 0.0
-    layercam_time_ms = 0.0
+    # 4. STAGE 2: U-NET WHOLE-TUMOR SEGMENTATION & MORPHOMETRICS (Unconditional Execution)
+    segmentation_performed = True
+    try:
+        prob_map, binary_mask, inf_time_ms = segmenter.segment(input_tensor)
+    except Exception as exc:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "success": False,
+                "error": "Inference Failure",
+                "detail": f"U-Net segmentation execution failed: {str(exc)}"
+            }
+        )
+
+    # Spatial Morphometrics
+    measurements_dict, confidence = calculate_tumor_measurements(binary_mask, prob_map)
+    seg_tumor_pixels = measurements_dict["area_pixels"]
+    seg_has_tumor = bool(seg_tumor_pixels > 0)
+
+    # U-Net LayerCAM Explainability
     layercam_map = None
-
-    if tumor_detected:
-        segmentation_performed = True
-        try:
-            prob_map, binary_mask, inf_time_ms = segmenter.segment(input_tensor)
-        except Exception as exc:
-            return JSONResponse(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                content={
-                    "success": False,
-                    "error": "Inference Failure",
-                    "detail": f"U-Net segmentation execution failed: {str(exc)}"
-                }
-            )
-
-        # U-Net LayerCAM Explainability
+    layercam_time_ms = 0.0
+    if seg_has_tumor:
         try:
             layercam_map, xai_meta, layercam_time_ms = layercam_gen.generate_cam(
                 input_tensor=input_tensor,
@@ -325,71 +329,40 @@ async def predict_segmentation(request: Request, file: UploadFile = File(...)):
                 "interpretation": "U-Net LayerCAM generation encountered an issue",
                 "layercam_time_ms": 0.0
             }
-
-        # Spatial Morphometrics
-        measurements_dict, confidence = calculate_tumor_measurements(binary_mask, prob_map)
-        artifact_files = generate_visualization_artifacts(
-            preprocessed_mri=norm_img_np,
-            binary_mask=binary_mask,
-            prob_map=prob_map,
-            output_dir=OUTPUT_DIR,
-            layercam_map=layercam_map,
-            base_id=base_id
-        )
-
-        outputs = OutputArtifacts(
-            preprocessed_mri=f"{base_url}/static/results/{artifact_files['preprocessed_mri']}",
-            classifier_layercam=classifier_layercam_url,
-            tumor_mask=f"{base_url}/static/results/{artifact_files['tumor_mask']}",
-            overlay=f"{base_url}/static/results/{artifact_files['overlay']}",
-            probability_map=f"{base_url}/static/results/{artifact_files['probability_map']}",
-            layercam=f"{base_url}/static/results/{artifact_files['layercam']}" if "layercam" in artifact_files else None,
-            layercam_overlay=f"{base_url}/static/results/{artifact_files['layercam_overlay']}" if "layercam_overlay" in artifact_files else None,
-            combined_overlay=f"{base_url}/static/results/{artifact_files['combined_overlay']}" if "combined_overlay" in artifact_files else None
-        )
-
     else:
-        # NO TUMOR: Skip U-Net segmentation, return zeroed measurements schema
-        segmentation_performed = False
-        measurements_dict = {
-            "tumor_detected": False,
-            "area_pixels": 0,
-            "area_percentage": 0.0,
-            "bounding_box": {"x": 0, "y": 0, "width": 0, "height": 0},
-            "width_pixels": 0,
-            "height_pixels": 0,
-            "diameter_pixels": 0,
-            "num_connected_components": 0,
-            "largest_component_area_pixels": 0,
-            "centroid": {"x": 0.0, "y": 0.0},
-            "largest_component_bounding_box": {"x": 0, "y": 0, "width": 0, "height": 0}
-        }
-        confidence = 0.0
-
-        # Save preprocessed MRI artifact for negative cases
-        mri_filename = f"{base_id}_mri.png"
-        mri_path = os.path.join(OUTPUT_DIR, mri_filename)
-        mri_uint8 = np.clip(norm_img_np * 255.0, 0, 255).astype(np.uint8)
-        Image.fromarray(mri_uint8).save(mri_path)
-
-        outputs = OutputArtifacts(
-            preprocessed_mri=f"{base_url}/static/results/{mri_filename}",
-            classifier_layercam=classifier_layercam_url,
-            tumor_mask=None,
-            overlay=None,
-            probability_map=None,
-            layercam=None,
-            layercam_overlay=None,
-            combined_overlay=None
-        )
-
+        # Transparent empty-mask / unavailable state with technical explanation
         xai_meta = {
             "method": "LayerCAM",
             "target_layer": layercam_gen.target_layer_name,
-            "target_definition": "Skipped (No Tumor Detected by Stage 1 Classifier)",
-            "interpretation": "U-Net segmentation skipped because no tumor was detected by Stage 1 classifier",
+            "target_definition": "Unavailable (No Tumor Pixels Segmented)",
+            "interpretation": (
+                f"Tumor-targeted LayerCAM attribution requires predicted tumor pixels to backpropagate gradients. "
+                f"Because 0 tumor pixels were segmented above decision threshold tau={segmenter.threshold}, "
+                f"tumor-targeted attribution is unavailable for this slice."
+            ),
             "layercam_time_ms": 0.0
         }
+
+    # Render Visual Artifacts (preprocessed MRI, mask, overlay, probability heatmap, and LayerCAM if available)
+    artifact_files = generate_visualization_artifacts(
+        preprocessed_mri=norm_img_np,
+        binary_mask=binary_mask,
+        prob_map=prob_map,
+        output_dir=OUTPUT_DIR,
+        layercam_map=layercam_map,
+        base_id=base_id
+    )
+
+    outputs = OutputArtifacts(
+        preprocessed_mri=f"{base_url}/static/results/{artifact_files['preprocessed_mri']}",
+        classifier_layercam=classifier_layercam_url,
+        tumor_mask=f"{base_url}/static/results/{artifact_files['tumor_mask']}",
+        overlay=f"{base_url}/static/results/{artifact_files['overlay']}",
+        probability_map=f"{base_url}/static/results/{artifact_files['probability_map']}",
+        layercam=f"{base_url}/static/results/{artifact_files['layercam']}" if "layercam" in artifact_files else None,
+        layercam_overlay=f"{base_url}/static/results/{artifact_files['layercam_overlay']}" if "layercam_overlay" in artifact_files else None,
+        combined_overlay=f"{base_url}/static/results/{artifact_files['combined_overlay']}" if "combined_overlay" in artifact_files else None
+    )
 
     t_total_end = time.perf_counter()
     total_time_ms = round((t_total_end - t_total_start) * 1000.0, 2)
@@ -410,7 +383,7 @@ async def predict_segmentation(request: Request, file: UploadFile = File(...)):
     )
 
     measurements = Measurements(
-        tumor_detected=tumor_detected,
+        tumor_detected=seg_has_tumor,
         area_pixels=measurements_dict["area_pixels"],
         area_percentage=measurements_dict["area_percentage"],
         bounding_box=bbox,
@@ -439,11 +412,11 @@ async def predict_segmentation(request: Request, file: UploadFile = File(...)):
     )
 
     classification_meta = ClassificationMetadata(
-        tumor_detected=tumor_detected,
+        tumor_detected=classifier_tumor_detected,
         tumor_probability=round(tumor_prob, 4),
         tumor_logit=round(tumor_logit, 4),
         decision_threshold=decision_threshold,
-        classification_label="Tumor Detected" if tumor_detected else "No Tumor Detected",
+        classification_label="Tumor Detected" if classifier_tumor_detected else "No Tumor Detected",
         explanation=explanation_text,
         xai=cls_xai
     )
@@ -479,7 +452,7 @@ async def predict_segmentation(request: Request, file: UploadFile = File(...)):
 
     return PredictionResponse(
         success=True,
-        tumor_detected=tumor_detected,
+        tumor_detected=seg_has_tumor,
         classification=classification_meta,
         segmentation=segmentation_meta,
         measurements=measurements,
