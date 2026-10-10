@@ -135,11 +135,20 @@ def run_backend_test_suite():
         # ---------------------------------------------------------------------
         print("[TEST 7] Testing Phase 1 Visual Overlay Artifact URLs...", end=" ", flush=True)
         outputs = pred_res["outputs"]
-        assert "overlay" in outputs and outputs["overlay"].endswith(".png")
-        assert "tumor_mask" in outputs and outputs["tumor_mask"].endswith(".png")
-        assert "probability_map" in outputs and outputs["probability_map"].endswith(".png")
-        assert "preprocessed_mri" in outputs and outputs["preprocessed_mri"].endswith(".png")
-        print("PASSED")
+        # Two-stage gate: segmentation artifacts exist only when the Stage-1
+        # classifier detects tumor; otherwise the API correctly returns None.
+        if pred_res["tumor_detected"] is True:
+            assert "overlay" in outputs and outputs["overlay"].endswith(".png")
+            assert "tumor_mask" in outputs and outputs["tumor_mask"].endswith(".png")
+            assert "probability_map" in outputs and outputs["probability_map"].endswith(".png")
+            assert "preprocessed_mri" in outputs and outputs["preprocessed_mri"].endswith(".png")
+            print("PASSED (tumor path)")
+        else:
+            assert outputs["overlay"] is None
+            assert outputs["tumor_mask"] is None
+            assert outputs["probability_map"] is None
+            assert "preprocessed_mri" in outputs and outputs["preprocessed_mri"].endswith(".png")
+            print("PASSED (no-tumor gate path: segmentation correctly skipped)")
         passed_count += 1
 
         # ---------------------------------------------------------------------
@@ -209,9 +218,15 @@ def run_backend_test_suite():
         # TEST 13 — LAYERCAM OUTPUT IN API RESPONSE
         # ---------------------------------------------------------------------
         print("[TEST 13] Testing LayerCAM Artifact in API Response...", end=" ", flush=True)
-        assert "layercam" in pred_res["outputs"] and pred_res["outputs"]["layercam"] is not None
-        assert pred_res["outputs"]["layercam"].endswith(".png")
-        print("PASSED")
+        # Gate-aware: U-Net LayerCAM is skipped when Stage-1 detects no tumor.
+        if pred_res["tumor_detected"] is True:
+            assert "layercam" in pred_res["outputs"] and pred_res["outputs"]["layercam"] is not None
+            assert pred_res["outputs"]["layercam"].endswith(".png")
+            print("PASSED (tumor path)")
+        else:
+            assert pred_res["outputs"]["layercam"] is None
+            assert pred_res["outputs"]["classifier_layercam"] is not None
+            print("PASSED (no-tumor gate path: U-Net LayerCAM correctly skipped, classifier CAM present)")
         passed_count += 1
 
         # ---------------------------------------------------------------------
@@ -235,9 +250,14 @@ def run_backend_test_suite():
         # TEST 16 — LAYERCAM OVERLAY ARTIFACT GENERATED
         # ---------------------------------------------------------------------
         print("[TEST 16] Testing LayerCAM Overlay Artifact URL...", end=" ", flush=True)
-        assert "layercam_overlay" in pred_res["outputs"] and pred_res["outputs"]["layercam_overlay"] is not None
-        assert pred_res["outputs"]["layercam_overlay"].endswith(".png")
-        print("PASSED")
+        # Gate-aware: overlay exists only on the tumor path (see TEST 13).
+        if pred_res["tumor_detected"] is True:
+            assert "layercam_overlay" in pred_res["outputs"] and pred_res["outputs"]["layercam_overlay"] is not None
+            assert pred_res["outputs"]["layercam_overlay"].endswith(".png")
+            print("PASSED (tumor path)")
+        else:
+            assert pred_res["outputs"]["layercam_overlay"] is None
+            print("PASSED (no-tumor gate path: overlay correctly skipped)")
         passed_count += 1
 
         # ---------------------------------------------------------------------
@@ -256,9 +276,14 @@ def run_backend_test_suite():
         # TEST 18 — COMBINED VISUALIZATION ARTIFACT GENERATED
         # ---------------------------------------------------------------------
         print("[TEST 18] Testing Combined MRI + Mask + LayerCAM Overlay URL...", end=" ", flush=True)
-        assert "combined_overlay" in pred_res["outputs"] and pred_res["outputs"]["combined_overlay"] is not None
-        assert pred_res["outputs"]["combined_overlay"].endswith(".png")
-        print("PASSED")
+        # Gate-aware: combined overlay exists only on the tumor path.
+        if pred_res["tumor_detected"] is True:
+            assert "combined_overlay" in pred_res["outputs"] and pred_res["outputs"]["combined_overlay"] is not None
+            assert pred_res["outputs"]["combined_overlay"].endswith(".png")
+            print("PASSED (tumor path)")
+        else:
+            assert pred_res["outputs"]["combined_overlay"] is None
+            print("PASSED (no-tumor gate path: combined overlay correctly skipped)")
         passed_count += 1
 
         # ---------------------------------------------------------------------
