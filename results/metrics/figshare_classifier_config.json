@@ -1,0 +1,12 @@
+{
+  "experiment": "figshare_classifier",
+  "seed": 42,
+  "epochs_run": 8,
+  "batch_size": 32,
+  "lr": 0.001,
+  "pos_weight": 5.332499980926514,
+  "best_epoch": 4,
+  "best_val_f1": 0.9953379953379954,
+  "params": 405313,
+  "device": "cuda"
+}

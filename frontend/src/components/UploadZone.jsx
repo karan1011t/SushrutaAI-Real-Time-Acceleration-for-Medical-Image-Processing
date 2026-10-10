@@ -7,6 +7,7 @@ export default function UploadZone({ onAnalyze, isLoading }) {
   const [fileMeta, setFileMeta] = useState(null);
   const [errorMsg, setErrorMsg] = useState(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [selectedModel, setSelectedModel] = useState('brats');
   const fileInputRef = useRef(null);
 
   const handleFileChange = (file) => {
@@ -68,7 +69,7 @@ export default function UploadZone({ onAnalyze, isLoading }) {
 
   const handleStartAnalysis = () => {
     if (selectedFile && !isLoading) {
-      onAnalyze(selectedFile);
+      onAnalyze(selectedFile, selectedModel);
     }
   };
 
@@ -150,7 +151,23 @@ export default function UploadZone({ onAnalyze, isLoading }) {
                 <span>Format: <strong style={{ color: 'var(--accent-cyan)' }}>{fileMeta?.format}</strong></span>
               </div>
 
-              <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+              <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: 600 }}>
+                  Segmentation Model:{' '}
+                  <select
+                    value={selectedModel}
+                    onChange={(e) => setSelectedModel(e.target.value)}
+                    disabled={isLoading}
+                    style={{
+                      background: 'var(--bg-card)', color: 'var(--text-primary)',
+                      border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)',
+                      padding: '0.45rem 0.6rem', fontSize: '0.8rem', fontWeight: 600
+                    }}
+                  >
+                    <option value="brats">BraTS FLAIR U-Net (two-stage)</option>
+                    <option value="figshare">Figshare T1-CE U-Net (direct)</option>
+                  </select>
+                </label>
                 <button
                   className="btn-primary"
                   onClick={handleStartAnalysis}

@@ -23,7 +23,7 @@ export default function App() {
   const [mainTab, setMainTab] = useState('segmentation'); // 'segmentation' | 'signal_analysis'
   const [overlayTab, setOverlayTab] = useState('primary'); // 'primary' | 'secondary'
 
-  const handleAnalyze = async (file) => {
+  const handleAnalyze = async (file, modelName = 'brats') => {
     setLoading(true);
     setError(null);
     setSsError(null);
@@ -32,6 +32,7 @@ export default function App() {
 
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('model', modelName);
 
     const formDataSs = new FormData();
     formDataSs.append('file', file);
@@ -90,7 +91,9 @@ export default function App() {
     setModalImage(null);
   };
 
-  const isTumorDetected = predictionData?.classification?.tumor_detected ?? predictionData?.tumor_detected ?? false;
+  // Pipeline verdict first: figshare verdict comes from segmentation (the BraTS
+  // classifier sub-object stays honest but is out-of-domain on T1-CE).
+  const isTumorDetected = predictionData?.tumor_detected ?? predictionData?.classification?.tumor_detected ?? false;
 
   return (
     <div className="app-container">

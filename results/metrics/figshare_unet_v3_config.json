@@ -1,0 +1,13 @@
+{
+  "experiment": "figshare_unet_v3",
+  "seed": 42,
+  "epochs_run": 30,
+  "batch_size": 8,
+  "lr_init": 0.0005,
+  "weight_decay": 0.0003,
+  "best_epoch": 30,
+  "best_val_tumor_dice": 0.723774954541401,
+  "params": 4317825,
+  "device": "cuda",
+  "disclaimer": "Research-prototype result on Figshare CE-T1 slices."
+}

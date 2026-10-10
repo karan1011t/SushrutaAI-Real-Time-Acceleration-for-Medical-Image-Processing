@@ -1,0 +1,13 @@
+{
+  "experiment": "figshare_unet_2d",
+  "data_dir": "C:\\coding-projects\\mini-project\\SushrutaAI-feature-worktree\\data\\processed\\figshare",
+  "seed": 42,
+  "epochs_run": 15,
+  "batch_size": 8,
+  "lr": 0.001,
+  "best_epoch": 14,
+  "best_val_tumor_dice": 0.6379804312643013,
+  "params": 4317825,
+  "device": "cuda",
+  "disclaimer": "Research-prototype result on Figshare CE-T1 slices."
+}

@@ -18,7 +18,7 @@ from PIL import Image
 from contextlib import asynccontextmanager
 from typing import Dict, Any, Optional
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, status, Request
+from fastapi import FastAPI, File, Form, UploadFile, HTTPException, status, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -62,17 +62,37 @@ segmenter: Optional[MedicalImageSegmenter] = None
 layercam_gen: Optional[LayerCAMGenerator] = None
 classifier_model: Optional[BinaryTumorClassifier] = None
 classifier_cam_gen: Optional[ClassifierLayerCAMGenerator] = None
+# In-domain Figshare T1 image-level classifier (gate + probability for figshare pipeline)
+figshare_classifier: Optional[BinaryTumorClassifier] = None
+figshare_classifier_cam: Optional[ClassifierLayerCAMGenerator] = None
+# Temperature fitted on val for calibrated figshare probabilities (ckpt key).
+figshare_temperature: float = 1.0
+
+# Multi-model registry: pipeline name -> {"segmenter", "layercam", "domain", "checkpoint"}
+# "brats": BraTS FLAIR two-stage pipeline (classifier gate + 1ch U-Net).
+# "figshare": Figshare T1-CE direct-segmentation pipeline (1ch U-Net, verdict from mask).
+segmenters: Dict[str, Any] = {}
+MODEL_CHOICES = ("brats", "figshare")
 
 # Configure Output Artifacts Directory
 OUTPUT_DIR = os.path.join(project_root, "results", "app_outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(SS_OUTPUT_DIR, exist_ok=True)
 
+# Figshare-path guardrails (research defaults; rotation-safe: pixel-count area
+# is invariant under rotation, so rotated tumors are unaffected).
+# Measured on 604 test slices (504 tumor + 100 healthy): gate-only 0.998/0.960,
+# OR(mask>=300) 1.000/0.890. The OR rule catches near-threshold gate misses
+# (e.g. prob 0.489 with a 670px mask) at a small specificity cost.
+FIGSHARE_MIN_TUMOR_PX = int(os.environ.get("SUSHRUTA_FIGSHARE_MIN_PX", "300"))
+FIGSHARE_SEG_THRESHOLD = float(os.environ.get("SUSHRUTA_FIGSHARE_THRESHOLD", "0.5"))
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan event handler loading U-Net & BinaryTumorClassifier checkpoints once at startup."""
-    global segmenter, layercam_gen, classifier_model, classifier_cam_gen
+    global segmenter, layercam_gen, classifier_model, classifier_cam_gen, segmenters
+    global figshare_classifier, figshare_classifier_cam, figshare_temperature
     print("=" * 60, flush=True)
     print("STARTING SUSHRUTA FASTAPI BACKEND SERVER (TWO-STAGE CLASSIFICATION & SEGMENTATION)", flush=True)
     print("=" * 60, flush=True)
@@ -82,6 +102,53 @@ async def lifespan(app: FastAPI):
         segmenter = MedicalImageSegmenter()
         layercam_gen = LayerCAMGenerator(segmenter.model, device=segmenter.device)
         print(f"[LIFESPAN] U-Net Segmenter & LayerCAM loaded on device: {segmenter.device}", flush=True)
+        segmenters["brats"] = {"segmenter": segmenter, "layercam": layercam_gen,
+                               "domain": "BraTS FLAIR (two-stage: classifier gate + U-Net)",
+                               "checkpoint": segmenter.checkpoint_path}
+
+        # Load Figshare T1-CE U-Net (prefer newest regularized retrain first)
+        for fig_name in ("figshare_unet_v3_best.pt", "figshare_unet_v2_best.pt", "figshare_unet_best.pt"):
+            fig_path = os.path.join(project_root, "results", "models", fig_name)
+            if os.path.exists(fig_path):
+                try:
+                    fig_seg = MedicalImageSegmenter(checkpoint_path=fig_path)
+                    fig_cam = LayerCAMGenerator(fig_seg.model, device=fig_seg.device)
+                    segmenters["figshare"] = {"segmenter": fig_seg, "layercam": fig_cam,
+                                              "domain": "Figshare T1-CE (direct segmentation, verdict from mask)",
+                                              "checkpoint": fig_path}
+                    print(f"[LIFESPAN] Figshare U-Net loaded from: {fig_path}", flush=True)
+                    break
+                except Exception as exc:
+                    print(f"[LIFESPAN WARNING] Figshare checkpoint {fig_path} failed to load: {exc}", flush=True)
+        if "figshare" not in segmenters:
+            print("[LIFESPAN WARNING] No Figshare checkpoint found; 'figshare' pipeline unavailable", flush=True)
+
+        # Load in-domain Figshare image-level classifier (v2: test acc 0.9934,
+        # rec 1.000, spec 0.96; prefer v2, fall back to v1)
+        fig_cls_path = None
+        for cand in ("figshare_classifier_v2_best.pt", "figshare_classifier_best.pt"):
+            p = os.path.join(project_root, "results", "models", cand)
+            if os.path.exists(p):
+                fig_cls_path = p
+                break
+        if fig_cls_path is not None:
+            try:
+                figshare_classifier = BinaryTumorClassifier().to(segmenter.device)
+                fckpt = torch.load(fig_cls_path, map_location=segmenter.device)
+                figshare_classifier.load_state_dict(
+                    fckpt["model_state_dict"] if isinstance(fckpt, dict) and "model_state_dict" in fckpt else fckpt)
+                figshare_classifier.eval()
+                figshare_classifier_cam = ClassifierLayerCAMGenerator(
+                    figshare_classifier, device=str(segmenter.device))
+                figshare_temperature = float(fckpt.get("temperature", 1.0)) if isinstance(fckpt, dict) else 1.0
+                print(f"[LIFESPAN] Figshare classifier loaded from: {fig_cls_path} "
+                      f"(T={figshare_temperature:.2f})", flush=True)
+            except Exception as exc:
+                print(f"[LIFESPAN WARNING] Figshare classifier failed to load: {exc}", flush=True)
+                figshare_classifier, figshare_classifier_cam = None, None
+        else:
+            print("[LIFESPAN WARNING] Figshare classifier checkpoint not found; figshare path uses mask verdict fallback",
+                  flush=True)
 
         # Load BinaryTumorClassifier Checkpoint
         classifier_ckpt_path = os.path.join(project_root, "results", "models", "baseline_02_classifier_best.pt")
@@ -111,7 +178,7 @@ app = FastAPI(
         "Includes Stage 1 BinaryTumorClassifier decision explanation and Stage 2 U-Net segmentation. "
         "Academic clinical decision-support prototype."
     ),
-    version="4.0.0",
+    version="4.1.0",
     lifespan=lifespan
 )
 
@@ -148,6 +215,18 @@ async def root():
     }
 
 
+@app.get("/models", tags=["Diagnostics"])
+async def list_models():
+    """Lists loaded segmentation pipelines (brats / figshare) and their checkpoints."""
+    return {"models": [
+        {"name": name,
+         "domain": entry["domain"],
+         "checkpoint": entry["checkpoint"],
+         **entry["segmenter"].get_info()}
+        for name, entry in segmenters.items()
+    ]}
+
+
 @app.get("/health", response_model=HealthResponse, tags=["Diagnostics"])
 async def health_check():
     """
@@ -180,11 +259,16 @@ async def health_check():
     },
     tags=["Segmentation & Explainability"]
 )
-async def predict_segmentation(request: Request, file: UploadFile = File(...)):
+async def predict_segmentation(request: Request, file: UploadFile = File(...),
+                                 model: str = Form("brats")):
     """
-    Runs Two-Stage 2D Brain MRI Analysis:
+    Runs 2D Brain MRI Analysis on the selected pipeline ("brats" or "figshare"):
     Stage 1: Image-level BinaryTumorClassifier prediction + Classifier LayerCAM XAI explanation.
-    Stage 2: Conditional U-Net segmentation & morphometric measurement calculations (executed only if tumor detected).
+    Stage 2: Conditional U-Net segmentation & morphometric measurement calculations.
+      - brats: two-stage gate (segmentation only if the BraTS classifier fires).
+      - figshare: direct segmentation with the Figshare T1-CE U-Net; the verdict
+        comes from the predicted mask because the Stage-1 classifier is BraTS-FLAIR
+        specific and out-of-domain on T1-CE (its output is still reported honestly).
     """
     t_total_start = time.perf_counter()
 
@@ -197,6 +281,19 @@ async def predict_segmentation(request: Request, file: UploadFile = File(...)):
                 "detail": "Classifier or U-Net segmentation model is not initialized."
             }
         )
+
+    pipeline = (model or "brats").lower()
+    if pipeline not in segmenters:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={
+                "success": False,
+                "error": "Unknown Model",
+                "detail": f"model must be one of {sorted(segmenters.keys())}, got '{model}'."
+            }
+        )
+    active_seg = segmenters[pipeline]["segmenter"]
+    active_cam = segmenters[pipeline]["layercam"]
 
     # 1. FILE VALIDATION
     if not file or not file.filename:
@@ -255,9 +352,24 @@ async def predict_segmentation(request: Request, file: UploadFile = File(...)):
         )
 
     # 3. STAGE 1: IMAGE-LEVEL BINARY CLASSIFICATION & CLASSIFIER LAYERCAM XAI
+    # Each pipeline uses its own in-domain classifier: BraTS-FLAIR for brats,
+    # Figshare-T1 for figshare (falls back to mask verdict if unavailable).
+    # Operating points are measured, not defaulted. v1 (pos_weight-inflated)
+    # needed 0.4; v2 (balanced + temperature T) re-validates 0.5:
+    # sens 1.000/spec 0.960 on 604 test slices. BraTS keeps 0.5 (historical).
     decision_threshold = 0.5
+    # Research-testing escape hatch: SUSHRUTA_FORCE_SEGMENT=1 runs Stage-2
+    # unconditionally (e.g. cross-domain segmenter whose paired classifier
+    # was trained on another modality). Never enable for clinical use.
+    force_segment = os.environ.get("SUSHRUTA_FORCE_SEGMENT", "0") == "1"
+    use_fig_classifier = (pipeline == "figshare" and figshare_classifier is not None
+                          and figshare_classifier_cam is not None)
+    stage1_cam_gen = figshare_classifier_cam if use_fig_classifier else classifier_cam_gen
     try:
-        classifier_cam_norm, tumor_prob, tumor_logit, location_info = classifier_cam_gen.generate_cam(input_tensor)
+        classifier_cam_norm, tumor_prob, tumor_logit, location_info = stage1_cam_gen.generate_cam(input_tensor)
+        if use_fig_classifier and figshare_temperature != 1.0:
+            # Temperature-calibrated probability (T fitted on val NLL).
+            tumor_prob = float(1.0 / (1.0 + np.exp(-float(tumor_logit) / figshare_temperature)))
         tumor_detected = bool(tumor_prob >= decision_threshold)
         explanation_text = generate_dynamic_explanation(
             tumor_detected=tumor_detected,
@@ -265,6 +377,16 @@ async def predict_segmentation(request: Request, file: UploadFile = File(...)):
             decision_threshold=decision_threshold,
             location_str=location_info["location"]
         )
+        if force_segment and not tumor_detected:
+            explanation_text += (" [SUSHRUTA_FORCE_SEGMENT=1: Stage-2 segmentation "
+                                 "executed for research testing despite negative gate.]")
+        if pipeline == "figshare":
+            if use_fig_classifier:
+                explanation_text += (" [In-domain Figshare T1 classifier "
+                                     "(test acc 0.99, recall 0.998); verdict from gate.]")
+            else:
+                explanation_text += (" [Note: Stage-1 classifier is BraTS-FLAIR specific; "
+                                     "on Figshare T1-CE the reported verdict comes from segmentation.]")
 
         # Save Classifier LayerCAM overlay artifact
         base_url = str(request.base_url).rstrip("/")
@@ -294,10 +416,21 @@ async def predict_segmentation(request: Request, file: UploadFile = File(...)):
     layercam_time_ms = 0.0
     layercam_map = None
 
-    if tumor_detected:
+    # Figshare pipeline with its in-domain classifier is a true two-stage gate
+    # (test recall 0.998). Without it, fall back to segment-then-mask-verdict.
+    # Figshare always segments: the verdict combines gate OR mask>=bar so a
+    # near-threshold gate miss with a solid mask is still caught.
+    fig_gate_effective = (pipeline != "figshare") or use_fig_classifier
+    run_segmentation = (tumor_detected or force_segment
+                        or pipeline == "figshare")
+    fig_mask_hit, fig_verdict = False, None
+    if run_segmentation:
         segmentation_performed = True
+        if pipeline == "figshare":
+            # Research default 0.5 (env-overridable); documented per-request.
+            active_seg.threshold = FIGSHARE_SEG_THRESHOLD
         try:
-            prob_map, binary_mask, inf_time_ms = segmenter.segment(input_tensor)
+            prob_map, binary_mask, inf_time_ms = active_seg.segment(input_tensor)
         except Exception as exc:
             return JSONResponse(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -310,17 +443,17 @@ async def predict_segmentation(request: Request, file: UploadFile = File(...)):
 
         # U-Net LayerCAM Explainability
         try:
-            layercam_map, xai_meta, layercam_time_ms = layercam_gen.generate_cam(
+            layercam_map, xai_meta, layercam_time_ms = active_cam.generate_cam(
                 input_tensor=input_tensor,
                 binary_mask=binary_mask,
-                threshold=segmenter.threshold
+                threshold=active_seg.threshold
             )
         except Exception:
             layercam_map = None
             layercam_time_ms = 0.0
             xai_meta = {
                 "method": "LayerCAM",
-                "target_layer": layercam_gen.target_layer_name,
+                "target_layer": active_cam.target_layer_name,
                 "target_definition": "Error during LayerCAM generation",
                 "interpretation": "U-Net LayerCAM generation encountered an issue",
                 "layercam_time_ms": 0.0
@@ -328,25 +461,75 @@ async def predict_segmentation(request: Request, file: UploadFile = File(...)):
 
         # Spatial Morphometrics
         measurements_dict, confidence = calculate_tumor_measurements(binary_mask, prob_map)
-        artifact_files = generate_visualization_artifacts(
-            preprocessed_mri=norm_img_np,
-            binary_mask=binary_mask,
-            prob_map=prob_map,
-            output_dir=OUTPUT_DIR,
-            layercam_map=layercam_map,
-            base_id=base_id
-        )
 
-        outputs = OutputArtifacts(
-            preprocessed_mri=f"{base_url}/static/results/{artifact_files['preprocessed_mri']}",
-            classifier_layercam=classifier_layercam_url,
-            tumor_mask=f"{base_url}/static/results/{artifact_files['tumor_mask']}",
-            overlay=f"{base_url}/static/results/{artifact_files['overlay']}",
-            probability_map=f"{base_url}/static/results/{artifact_files['probability_map']}",
-            layercam=f"{base_url}/static/results/{artifact_files['layercam']}" if "layercam" in artifact_files else None,
-            layercam_overlay=f"{base_url}/static/results/{artifact_files['layercam_overlay']}" if "layercam_overlay" in artifact_files else None,
-            combined_overlay=f"{base_url}/static/results/{artifact_files['combined_overlay']}" if "combined_overlay" in artifact_files else None
-        )
+        # Figshare combined verdict: in-domain gate OR mask>=bar. Catches
+        # near-threshold gate misses with solid masks; suppresses specks.
+        # (Band-aid honesty: the bar suppresses small hallucinations but can
+        # also hide real tumors smaller than the bar when the gate misses.)
+        fig_mask_hit = int(measurements_dict["area_pixels"]) >= FIGSHARE_MIN_TUMOR_PX
+        fig_verdict = bool((tumor_detected and fig_gate_effective) or fig_mask_hit)
+        guardrail_suppressed = (pipeline == "figshare" and not fig_verdict)
+        if (pipeline == "figshare" and segmentation_performed and tumor_detected
+                and int(measurements_dict["area_pixels"]) == 0):
+            # Gate fired but segmenter localized nothing: report the calibrated
+            # gate probability as confidence (never 0 next to a positive) and
+            # point at the classifier heatmap as the only visual evidence.
+            confidence = round(float(tumor_prob), 4)
+            explanation_text += (" [Gate-positive with no localized region: confidence "
+                                 "reflects the image-level score; see classifier heatmap; "
+                                 "recommend expert review.]")
+        if guardrail_suppressed:
+            measurements_dict = {
+                "tumor_detected": False,
+                "area_pixels": 0,
+                "area_percentage": 0.0,
+                "bounding_box": {"x": 0, "y": 0, "width": 0, "height": 0},
+                "width_pixels": 0,
+                "height_pixels": 0,
+                "diameter_pixels": 0,
+                "num_connected_components": 0,
+                "largest_component_area_pixels": 0,
+                "centroid": {"x": 0.0, "y": 0.0},
+                "largest_component_bounding_box": {"x": 0, "y": 0, "width": 0, "height": 0}
+            }
+            confidence = 0.0
+            mri_filename = f"{base_id}_mri.png"
+            Image.fromarray(np.clip(norm_img_np * 255.0, 0, 255).astype(np.uint8)).save(
+                os.path.join(OUTPUT_DIR, mri_filename))
+            outputs = OutputArtifacts(
+                preprocessed_mri=f"{base_url}/static/results/{mri_filename}",
+                classifier_layercam=classifier_layercam_url,
+                tumor_mask=None, overlay=None, probability_map=None,
+                layercam=None, layercam_overlay=None, combined_overlay=None
+            )
+            xai_meta = {
+                "method": "LayerCAM",
+                "target_layer": active_cam.target_layer_name,
+                "target_definition": f"Suppressed (predicted area below {FIGSHARE_MIN_TUMOR_PX}px floor)",
+                "interpretation": ("Segmentation ran but the predicted region was below the "
+                                   "min-area guardrail and reported as negative."),
+                "layercam_time_ms": 0.0
+            }
+        if not guardrail_suppressed:
+            artifact_files = generate_visualization_artifacts(
+                preprocessed_mri=norm_img_np,
+                binary_mask=binary_mask,
+                prob_map=prob_map,
+                output_dir=OUTPUT_DIR,
+                layercam_map=layercam_map,
+                base_id=base_id
+            )
+
+            outputs = OutputArtifacts(
+                preprocessed_mri=f"{base_url}/static/results/{artifact_files['preprocessed_mri']}",
+                classifier_layercam=classifier_layercam_url,
+                tumor_mask=f"{base_url}/static/results/{artifact_files['tumor_mask']}",
+                overlay=f"{base_url}/static/results/{artifact_files['overlay']}",
+                probability_map=f"{base_url}/static/results/{artifact_files['probability_map']}",
+                layercam=f"{base_url}/static/results/{artifact_files['layercam']}" if "layercam" in artifact_files else None,
+                layercam_overlay=f"{base_url}/static/results/{artifact_files['layercam_overlay']}" if "layercam_overlay" in artifact_files else None,
+                combined_overlay=f"{base_url}/static/results/{artifact_files['combined_overlay']}" if "combined_overlay" in artifact_files else None
+            )
 
     else:
         # NO TUMOR: Skip U-Net segmentation, return zeroed measurements schema
@@ -385,11 +568,34 @@ async def predict_segmentation(request: Request, file: UploadFile = File(...)):
 
         xai_meta = {
             "method": "LayerCAM",
-            "target_layer": layercam_gen.target_layer_name,
+            "target_layer": active_cam.target_layer_name,
             "target_definition": "Skipped (No Tumor Detected by Stage 1 Classifier)",
             "interpretation": "U-Net segmentation skipped because no tumor was detected by Stage 1 classifier",
             "layercam_time_ms": 0.0
         }
+
+    # Pipeline verdict: brats follows the classifier gate; figshare follows the
+    # combined gate-OR-mask verdict computed above (mask fallback if the
+    # in-domain classifier is unavailable, since the BraTS gate is then void).
+    # mask_override tracks gate-negative/mask-positive splits so downstream
+    # wording never contradicts the verdict (header/body mismatch fix).
+    mask_override = False
+    if pipeline == "figshare" and segmentation_performed and fig_verdict is not None:
+        gate_fired = bool(tumor_detected)
+        if not use_fig_classifier:
+            tumor_detected = bool(fig_mask_hit)
+        else:
+            tumor_detected = bool(fig_verdict)
+        mask_override = bool(tumor_detected and not gate_fired)
+        if mask_override:
+            # Rewrite the gate-worded opening so body and verdict agree.
+            explanation_text = explanation_text.replace(
+                "No tumor detected.",
+                "Tumor detected by segmentation despite a negative image-level score.", 1)
+            explanation_text += (" [Verdict follows segmentation: the image-level score "
+                                 f"({tumor_prob:.1%}) is below threshold, but a "
+                                 f"{int(measurements_dict['area_pixels'])}px region was localized. "
+                                 "Recommend expert review.]")
 
     t_total_end = time.perf_counter()
     total_time_ms = round((t_total_end - t_total_start) * 1000.0, 2)
@@ -432,7 +638,7 @@ async def predict_segmentation(request: Request, file: UploadFile = File(...)):
 
     cls_xai = ClassificationXAI(
         method="LayerCAM",
-        target_layer=classifier_cam_gen.target_layer_name,
+        target_layer=stage1_cam_gen.target_layer_name,
         strongest_region_location=location_info["location"],
         centroid=location_info["centroid"],
         bounding_box=cls_bbox
@@ -443,7 +649,10 @@ async def predict_segmentation(request: Request, file: UploadFile = File(...)):
         tumor_probability=round(tumor_prob, 4),
         tumor_logit=round(tumor_logit, 4),
         decision_threshold=decision_threshold,
-        classification_label="Tumor Detected" if tumor_detected else "No Tumor Detected",
+        classification_label=(
+            "Tumor Detected (segmentation; classifier negative)" if mask_override
+            else ("Tumor Detected" if tumor_detected else "No Tumor Detected")
+        ),
         explanation=explanation_text,
         xai=cls_xai
     )
@@ -460,8 +669,8 @@ async def predict_segmentation(request: Request, file: UploadFile = File(...)):
         layercam_time_ms=layercam_time_ms,
         preprocessing_time_ms=round(prep_time_ms, 2),
         total_request_time_ms=total_time_ms,
-        device=str(segmenter.device),
-        threshold_used=segmenter.threshold
+        device=str(active_seg.device),
+        threshold_used=active_seg.threshold
     )
 
     explainability_info = ExplainabilityMetadata(

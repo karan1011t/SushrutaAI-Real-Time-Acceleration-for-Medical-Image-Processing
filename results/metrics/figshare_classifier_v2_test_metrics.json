@@ -1,0 +1,15 @@
+{
+  "test_loss": 0.0538,
+  "accuracy": 0.9934,
+  "precision": 0.9921,
+  "recall": 1.0,
+  "specificity": 0.96,
+  "f1": 0.996,
+  "tn": 96,
+  "fp": 4,
+  "fn": 0,
+  "tp": 504,
+  "n": 604,
+  "best_epoch": 8,
+  "temperature": 0.7000000000000002
+}

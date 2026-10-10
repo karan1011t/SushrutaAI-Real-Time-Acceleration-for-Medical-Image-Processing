@@ -1,0 +1,19 @@
+{
+  "test_loss": 0.222,
+  "val_global_dice": 0.7464,
+  "val_global_iou": 0.5953,
+  "val_precision": 0.7906,
+  "val_recall": 0.7068,
+  "val_f1": 0.7464,
+  "val_tumor_dice": 0.715,
+  "val_tumor_iou": 0.6201,
+  "val_tumor_precision": 0.7584,
+  "val_tumor_recall": 0.7425,
+  "val_tumor_f1": 0.715,
+  "val_macro_all_dice": 0.7257,
+  "num_tumor_slices": 504.0,
+  "num_empty_slices": 100.0,
+  "test_slices": 604,
+  "best_epoch": 30,
+  "disclaimer": "Research-prototype result on Figshare CE-T1 slices."
+}

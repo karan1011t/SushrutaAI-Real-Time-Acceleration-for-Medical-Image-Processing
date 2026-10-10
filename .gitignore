@@ -37,6 +37,10 @@ data/external/
 results/models/
 results/audit/DATASET_CASE_INVENTORY.csv
 
+# Runtime-generated API outputs (per-request artifacts, not research records)
+results/app_outputs/
+results/signal_analysis/
+
 # Temporary Root Diagnostic & Scratch Scripts
 scratch/
 audit_*.py
