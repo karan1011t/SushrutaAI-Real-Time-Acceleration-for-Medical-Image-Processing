@@ -131,6 +131,8 @@ class MedicalImageSegmenter:
             inference_time_ms = (t_end - t_start) * 1000.0
 
         prob_map = probs.squeeze().cpu().numpy().astype(np.float32)
+        if np.isnan(prob_map).any() or np.isinf(prob_map).any():
+            raise ValueError("U-Net segmentation model produced non-finite probabilities (NaN or Inf). Inference corrupted.")
         binary_mask = (prob_map >= self.threshold).astype(np.uint8)
 
         return prob_map, binary_mask, round(float(inference_time_ms), 3)

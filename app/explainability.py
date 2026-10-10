@@ -126,6 +126,9 @@ class LayerCAMGenerator:
                     target_score = logits.max()
                     target_def = "Maximum logit activation across slice (no tumor pixels predicted)"
 
+                if torch.isnan(target_score) or torch.isinf(target_score):
+                    raise ValueError("Target score for LayerCAM backpropagation is non-finite (NaN or Inf).")
+
                 # Backpropagate target score Y to target layer feature maps A
                 target_score.backward()
 
@@ -144,6 +147,7 @@ class LayerCAMGenerator:
             cam_tensor = torch.clamp((weights * A).sum(dim=1, keepdim=True), min=0.0)
 
             cam_np = cam_tensor.squeeze().cpu().numpy().astype(np.float32)
+            cam_np = np.nan_to_num(cam_np, nan=0.0, posinf=0.0, neginf=0.0)
 
         finally:
             # Safely remove handles to prevent hook accumulation and GPU memory leaks

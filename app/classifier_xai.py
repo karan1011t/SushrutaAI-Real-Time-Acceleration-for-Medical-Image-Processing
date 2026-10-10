@@ -64,6 +64,10 @@ class ClassifierLayerCAMGenerator:
             prob = float(torch.sigmoid(logit).item())
             logit_val = float(logit.item())
 
+            # Explicit failure on non-finite model output (do not mask corrupt inference as negative)
+            if np.isnan(logit_val) or np.isinf(logit_val) or np.isnan(prob) or np.isinf(prob):
+                raise ValueError("Stage 1 classifier model output is non-finite (NaN or Inf). Inference corrupted.")
+
             # Backpropagate target class score
             target_score = logit[0, 0]
             target_score.backward(retain_graph=False)
@@ -83,8 +87,10 @@ class ClassifierLayerCAMGenerator:
             cam = torch.clamp(cam, min=0.0)
 
             cam_np = cam.cpu().numpy()
+            cam_np = np.nan_to_num(cam_np, nan=0.0, posinf=0.0, neginf=0.0)
             H_in, W_in = input_tensor.shape[2], input_tensor.shape[3]
             cam_resized = cv2.resize(cam_np, (W_in, H_in), interpolation=cv2.INTER_LINEAR)
+            cam_resized = np.nan_to_num(cam_resized, nan=0.0, posinf=0.0, neginf=0.0)
 
             c_min, c_max = float(cam_resized.min()), float(cam_resized.max())
             is_detected = bool(prob >= decision_threshold)
