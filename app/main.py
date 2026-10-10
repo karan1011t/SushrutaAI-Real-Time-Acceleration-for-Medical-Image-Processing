@@ -35,6 +35,7 @@ from app.schemas import (
     ErrorResponse,
     Measurements,
     BoundingBox,
+    ShapeDescriptors,
     InferenceMetadata,
     ExplainabilityMetadata,
     ImageDimensions,
@@ -382,6 +383,21 @@ async def predict_segmentation(request: Request, file: UploadFile = File(...)):
         height=measurements_dict["largest_component_bounding_box"]["height"]
     )
 
+    shape_desc_obj = None
+    if "shape_descriptors" in measurements_dict and measurements_dict["shape_descriptors"] is not None:
+        sd_dict = measurements_dict["shape_descriptors"]
+        shape_desc_obj = ShapeDescriptors(
+            perimeter_pixels=sd_dict.get("perimeter_pixels"),
+            circularity=sd_dict.get("circularity"),
+            solidity=sd_dict.get("solidity"),
+            major_axis_length=sd_dict.get("major_axis_length"),
+            minor_axis_length=sd_dict.get("minor_axis_length"),
+            eccentricity=sd_dict.get("eccentricity"),
+            feret_diameter_max=sd_dict.get("feret_diameter_max"),
+            aggregation_policy=sd_dict.get("aggregation_policy", "largest_connected_component"),
+            coordinate_system=sd_dict.get("coordinate_system", "processed_mask_grid")
+        )
+
     measurements = Measurements(
         tumor_detected=seg_has_tumor,
         area_pixels=measurements_dict["area_pixels"],
@@ -393,7 +409,18 @@ async def predict_segmentation(request: Request, file: UploadFile = File(...)):
         num_connected_components=measurements_dict["num_connected_components"],
         largest_component_area_pixels=measurements_dict["largest_component_area_pixels"],
         centroid=measurements_dict["centroid"],
-        largest_component_bounding_box=lc_bbox
+        largest_component_bounding_box=lc_bbox,
+        perimeter_pixels=measurements_dict.get("perimeter_pixels"),
+        circularity=measurements_dict.get("circularity"),
+        solidity=measurements_dict.get("solidity"),
+        major_axis_length=measurements_dict.get("major_axis_length"),
+        minor_axis_length=measurements_dict.get("minor_axis_length"),
+        eccentricity=measurements_dict.get("eccentricity"),
+        feret_diameter_max=measurements_dict.get("feret_diameter_max"),
+        shape_descriptors=shape_desc_obj,
+        spatial_unit=measurements_dict.get("spatial_unit", "pixels"),
+        diameter_definition=measurements_dict.get("diameter_definition"),
+        note=measurements_dict.get("note")
     )
 
     cls_bbox = BoundingBox(

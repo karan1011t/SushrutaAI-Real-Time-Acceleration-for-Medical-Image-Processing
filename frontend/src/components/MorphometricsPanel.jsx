@@ -1,7 +1,7 @@
 import React from 'react';
-import { AlertTriangle, CheckCircle2, Grid, Info, AlertCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Grid, Info, AlertCircle, Layers } from 'lucide-react';
 
-export default function MorphometricsPanel({ measurements, confidence, tumorDetected }) {
+export default function MorphometricsPanel({ measurements, confidence, _tumorDetected }) {
   if (!measurements) return null;
 
   const {
@@ -12,10 +12,28 @@ export default function MorphometricsPanel({ measurements, confidence, tumorDete
     num_connected_components = 0,
     largest_component_area_pixels = 0,
     centroid = { x: 0.0, y: 0.0 },
-    largest_component_bounding_box = { x: 0, y: 0, width: 0, height: 0 }
+    largest_component_bounding_box = { x: 0, y: 0, width: 0, height: 0 },
+    // Phase 3A: Quantitative 2D Morphology Descriptors
+    perimeter_pixels = null,
+    circularity = null,
+    solidity = null,
+    major_axis_length = null,
+    minor_axis_length = null,
+    eccentricity = null,
+    feret_diameter_max = null,
+    shape_descriptors = null
   } = measurements;
 
   const has_tumor_pixels = (area_pixels || 0) > 0;
+
+  // Resolve shape descriptors with fallback to nested shape_descriptors object
+  const finalPerimeter = perimeter_pixels ?? shape_descriptors?.perimeter_pixels ?? null;
+  const finalCircularity = circularity ?? shape_descriptors?.circularity ?? null;
+  const finalSolidity = solidity ?? shape_descriptors?.solidity ?? null;
+  const finalMajor = major_axis_length ?? shape_descriptors?.major_axis_length ?? null;
+  const finalMinor = minor_axis_length ?? shape_descriptors?.minor_axis_length ?? null;
+  const finalEccentricity = eccentricity ?? shape_descriptors?.eccentricity ?? null;
+  const finalFeret = feret_diameter_max ?? shape_descriptors?.feret_diameter_max ?? null;
 
   return (
     <div className="card" style={{ marginBottom: '1.5rem' }}>
@@ -50,7 +68,7 @@ export default function MorphometricsPanel({ measurements, confidence, tumorDete
         </div>
       </div>
 
-      {/* Metrics Grid */}
+      {/* Spatial Geometry Metrics Grid */}
       <div className="metrics-grid-3">
         <div className="metric-box">
           <div className="metric-label">Segmented Pixel Count</div>
@@ -145,13 +163,125 @@ export default function MorphometricsPanel({ measurements, confidence, tumorDete
         </div>
       </div>
 
+      {/* Phase 3A: 2D Morphological Descriptors Section */}
+      <div style={{ marginTop: '1.5rem', marginBottom: '1.25rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.4rem' }}>
+          <Layers size={18} color="var(--accent-cyan)" />
+          <h4 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+            2D Morphological Shape Descriptors (Primary Lesion)
+          </h4>
+        </div>
+        <p style={{ margin: 0, fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '0.9rem' }}>
+          Quantitative shape descriptors evaluated on the primary tumor component (largest 8-connected island) on the 256 × 256 processed grid. Unavailable values are displayed as N/A.
+        </p>
+
+        <div className="metrics-grid-3">
+          <div className="metric-box">
+            <div className="metric-label">Perimeter</div>
+            <div className="metric-value">
+              {finalPerimeter != null ? Number(finalPerimeter).toFixed(1) : 'N/A'}
+              <span className="metric-unit">px</span>
+            </div>
+            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+              Boundary arc length via 8-connected pixel contour
+            </div>
+          </div>
+
+          <div className="metric-box">
+            <div className="metric-label">Circularity</div>
+            <div className="metric-value">
+              {finalCircularity != null ? Number(finalCircularity).toFixed(3) : 'N/A'}
+              <span className="metric-unit">isoperimetric</span>
+            </div>
+            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+              4π·Area / Perimeter² (ideal circle = 1.0; raster discrete bounds)
+            </div>
+          </div>
+
+          <div className="metric-box">
+            <div className="metric-label">Solidity</div>
+            <div className="metric-value">
+              {finalSolidity != null ? Number(finalSolidity).toFixed(3) : 'N/A'}
+              <span className="metric-unit">ratio</span>
+            </div>
+            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+              Area / Convex Hull pixel area (convex mass = 1.0)
+            </div>
+          </div>
+
+          <div className="metric-box">
+            <div className="metric-label">Inertia Axes (Major × Minor)</div>
+            <div className="metric-value" style={{ fontSize: '1.15rem' }}>
+              {finalMajor != null && finalMinor != null ? `${finalMajor} × ${finalMinor}` : 'N/A'}
+              <span className="metric-unit">px</span>
+            </div>
+            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+              Equivalent inertia ellipse axes from 2nd-order central moments
+            </div>
+          </div>
+
+          <div className="metric-box">
+            <div className="metric-label">Eccentricity</div>
+            <div className="metric-value">
+              {finalEccentricity != null ? Number(finalEccentricity).toFixed(3) : 'N/A'}
+              <span className="metric-unit">[0.0, 1.0]</span>
+            </div>
+            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+              √(1 - λ₂/λ₁) elongation (circle = 0.0; elongated → 1.0)
+            </div>
+          </div>
+
+          <div className="metric-box">
+            <div className="metric-label">Max Feret Diameter</div>
+            <div className="metric-value">
+              {finalFeret != null ? finalFeret : 'N/A'}
+              <span className="metric-unit">px</span>
+            </div>
+            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+              Max Euclidean caliper distance between convex hull vertices
+            </div>
+          </div>
+        </div>
+
+        {/* Aggregation Policy Callout */}
+        <div style={{
+          fontSize: '0.75rem',
+          color: 'var(--text-muted)',
+          marginTop: '0.6rem',
+          fontStyle: 'italic'
+        }}>
+          * Aggregation Policy: Descriptors characterize the primary lesion mass (largest connected component). Disconnected satellite clusters are not aggregated into a composite hull.
+        </div>
+      </div>
+
+      {/* Non-Clinical / Research Prototype Notice */}
+      <div style={{
+        background: 'rgba(15, 23, 42, 0.6)',
+        border: '1px solid var(--border-color)',
+        borderRadius: 'var(--radius-sm)',
+        padding: '0.75rem 1rem',
+        marginBottom: '0.65rem',
+        display: 'flex',
+        alignItems: 'flex-start',
+        gap: '0.6rem',
+        fontSize: '0.8rem',
+        color: 'var(--text-secondary)',
+        lineHeight: 1.45
+      }}>
+        <Info size={18} color="var(--accent-cyan)" style={{ marginTop: '0.1rem', flexShrink: 0 }} />
+        <div>
+          <strong style={{ color: 'var(--text-primary)' }}>Research Prototype Notice: </strong>
+          2D shape descriptors represent geometric properties of the model's predicted raster segmentation mask. They are NOT clinically validated diagnostic findings, staging markers, or malignancy determinations.
+        </div>
+      </div>
+
       {/* Mandatory Regulatory / Technical Limitation Callout */}
       <div style={{
         background: 'rgba(15, 23, 42, 0.6)',
         border: '1px solid var(--border-color)',
         borderRadius: 'var(--radius-sm)',
-        padding: '0.85rem 1rem',
-        marginBottom: '0.75rem',
+        padding: '0.75rem 1rem',
+        marginBottom: '0.65rem',
         display: 'flex',
         alignItems: 'flex-start',
         gap: '0.6rem',
@@ -162,7 +292,7 @@ export default function MorphometricsPanel({ measurements, confidence, tumorDete
         <Info size={18} color="var(--accent-cyan)" style={{ marginTop: '0.1rem', flexShrink: 0 }} />
         <div>
           <strong style={{ color: 'var(--text-primary)' }}>Technical Limitation: </strong>
-          Measurements are in processed-image pixels. Physical dimensions in mm or mm² and volume in cm³ are unavailable because the current pipeline does not preserve validated NIfTI/DICOM spacing metadata.
+          Measurements are in processed-image pixels (256 × 256 matrix). Physical dimensions in mm or mm² and volume in cm³ are unavailable because the current pipeline does not preserve validated NIfTI/DICOM spacing metadata.
         </div>
       </div>
 
@@ -171,7 +301,7 @@ export default function MorphometricsPanel({ measurements, confidence, tumorDete
         background: 'rgba(15, 23, 42, 0.6)',
         border: '1px solid var(--border-color)',
         borderRadius: 'var(--radius-sm)',
-        padding: '0.85rem 1rem',
+        padding: '0.75rem 1rem',
         display: 'flex',
         alignItems: 'flex-start',
         gap: '0.6rem',

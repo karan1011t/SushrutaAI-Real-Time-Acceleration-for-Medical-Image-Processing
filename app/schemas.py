@@ -13,10 +13,22 @@ class BoundingBox(BaseModel):
     height: int = Field(..., description="Bounding box height in pixels")
 
 
+class ShapeDescriptors(BaseModel):
+    perimeter_pixels: Optional[float] = Field(None, description="External perimeter of primary lesion in processed-grid pixels")
+    circularity: Optional[float] = Field(None, description="Circularity (4*pi*area / perimeter^2) in [0.0, 1.0], null if undefined")
+    solidity: Optional[float] = Field(None, description="Solidity (lesion area / convex hull area) in [0.0, 1.0], null if undefined")
+    major_axis_length: Optional[float] = Field(None, description="Equivalent inertia ellipse major axis length in processed-grid pixels")
+    minor_axis_length: Optional[float] = Field(None, description="Equivalent inertia ellipse minor axis length in processed-grid pixels")
+    eccentricity: Optional[float] = Field(None, description="Ellipse eccentricity in [0.0, 1.0], null if undefined")
+    feret_diameter_max: Optional[float] = Field(None, description="Maximum Feret caliper diameter in processed-grid pixels")
+    aggregation_policy: str = Field("largest_connected_component", description="Morphology aggregation policy (primary lesion mass)")
+    coordinate_system: str = Field("processed_mask_grid", description="Coordinate space of descriptors (processed 2D grid pixels)")
+
+
 class Measurements(BaseModel):
     tumor_detected: bool = Field(..., description="Whether tumor pixels were detected above threshold")
     area_pixels: int = Field(..., description="Total count of predicted tumor pixels")
-    area_percentage: float = Field(..., description="Percentage of slice area (256x256) occupied by predicted tumor")
+    area_percentage: float = Field(..., description="Percentage of slice area occupied by predicted tumor")
     bounding_box: BoundingBox = Field(..., description="Bounding box surrounding tumor region")
     width_pixels: int = Field(..., description="Tumor bounding box width in pixels")
     height_pixels: int = Field(..., description="Tumor bounding box height in pixels")
@@ -31,6 +43,18 @@ class Measurements(BaseModel):
         default=None,
         description="Bounding box for largest connected component"
     )
+    # Phase 3A: Quantitative 2D Morphological Descriptors (Primary Lesion Mass)
+    perimeter_pixels: Optional[float] = Field(None, description="External perimeter of primary lesion in processed-grid pixels")
+    circularity: Optional[float] = Field(None, description="Circularity (4*pi*area / perimeter^2) in [0.0, 1.0]")
+    solidity: Optional[float] = Field(None, description="Solidity (lesion area / convex hull area) in [0.0, 1.0]")
+    major_axis_length: Optional[float] = Field(None, description="Equivalent inertia ellipse major axis length in processed-grid pixels")
+    minor_axis_length: Optional[float] = Field(None, description="Equivalent inertia ellipse minor axis length in processed-grid pixels")
+    eccentricity: Optional[float] = Field(None, description="Ellipse eccentricity in [0.0, 1.0]")
+    feret_diameter_max: Optional[float] = Field(None, description="Maximum Feret caliper diameter in processed-grid pixels")
+    shape_descriptors: Optional[ShapeDescriptors] = Field(None, description="Structured 2D shape descriptors for primary lesion")
+    spatial_unit: Optional[str] = Field("pixels", description="Spatial unit of measurement (processed grid pixels)")
+    diameter_definition: Optional[str] = Field(None, description="Definition of diameter_pixels")
+    note: Optional[str] = Field(None, description="Measurement notes and calibration limitation disclaimer")
 
 
 class InferenceMetadata(BaseModel):
